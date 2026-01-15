@@ -3,64 +3,73 @@ import pdfplumber
 import pandas as pd
 from io import BytesIO
 
-st.set_page_config(page_title="高鐵 PDF 轉 Excel 工具", page_icon="📂")
-st.title("📂 高鐵 PDF 轉 Excel 雲端版")
-st.markdown("手機專用：上傳 PDF，轉換後下載 Excel，再拿去查詢系統使用。")
+# ==========================================
+# 頁面設定
+# ==========================================
+st.set_page_config(page_title="萬用 PDF 轉 Excel 工具", page_icon="📑")
+st.title("📑 萬用 PDF 轉 Excel 轉換器")
+st.markdown("""
+**長久需求專用版**：不限高鐵，任何 PDF 報表皆可嘗試轉換。
+程式會自動偵測每一頁的表格，並將其存為 Excel 的不同工作表。
+""")
 
-# 1. 檔案上傳
-uploaded_file = st.file_uploader("請上傳 Download.pdf", type=["pdf"])
+# ==========================================
+# 檔案上傳
+# ==========================================
+uploaded_file = st.file_uploader("📂 請上傳包含表格的 PDF 檔", type=["pdf"])
 
 if uploaded_file is not None:
-    st.info("正在讀取並轉換中，請稍候...")
+    st.info("🔄 正在分析文件結構，請稍候...")
     
     try:
-        # 使用 BytesIO 在記憶體中建立 Excel 檔，不存到硬碟
+        # 使用 BytesIO 在記憶體中建立 Excel
         output = BytesIO()
         
+        # 轉換核心邏輯
         with pdfplumber.open(uploaded_file) as pdf, pd.ExcelWriter(output, engine='openpyxl') as writer:
-            has_tables = False
-            
-            # 進度條
-            progress_bar = st.progress(0)
             total_pages = len(pdf.pages)
+            pages_converted = 0
+            progress_bar = st.progress(0)
             
             for i, page in enumerate(pdf.pages):
+                # 嘗試抓取該頁面所有的表格
                 tables = page.extract_tables()
                 
                 if tables:
-                    has_tables = True
+                    # 將這一頁找到的所有表格合併 (有些頁面可能有多個表格)
                     page_df_list = []
                     for table in tables:
-                        # 強制轉成文字格式，避免錯誤
+                        # 全部轉為文字格式，避免數字/日期格式判讀錯誤
                         df = pd.DataFrame(table).astype(str)
+                        
+                        # 簡單清洗：把 None 轉為空字串
+                        df = df.replace("None", "")
                         page_df_list.append(df)
                     
                     if page_df_list:
+                        # 合併該頁所有小表格
                         page_df = pd.concat(page_df_list, ignore_index=True)
                         
-                        # 判斷方向
-                        text = page.extract_text() or ""
+                        # 命名工作表：Page_1, Page_2...
                         sheet_name = f"Page_{i+1}"
-                        if "Southbound" in text or "南下" in text:
-                            sheet_name = f"Page_{i+1}_南下"
-                        elif "Northbound" in text or "北上" in text:
-                            sheet_name = f"Page_{i+1}_北上"
                         
-                        # 寫入 Excel
+                        # 寫入 Excel (不帶入預設的 0,1,2 索引與欄位名，保留原始樣貌)
                         page_df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
+                        pages_converted += 1
                 
-                # 更新進度
+                # 更新進度條
                 progress_bar.progress((i + 1) / total_pages)
             
-            if has_tables:
-                st.success("✅ 轉換成功！請點擊下方按鈕下載。")
+            # 結果判定
+            if pages_converted > 0:
+                st.success(f"✅ 轉換完成！共成功處理 {pages_converted} 頁表格。")
                 
-                # 重置游標位置，準備下載
+                # 準備下載
                 output.seek(0)
-                
-                # 產生當前時間檔名
                 timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-                file_name = f"thsr_schedule_{timestamp}.xlsx"
+                # 檔名使用 original_converted_時間.xlsx
+                original_name = uploaded_file.name.rsplit('.', 1)[0]
+                file_name = f"{original_name}_converted_{timestamp}.xlsx"
                 
                 st.download_button(
                     label="📥 下載 Excel 檔案",
@@ -69,7 +78,11 @@ if uploaded_file is not None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
-                st.error("⚠️ 在 PDF 中找不到表格，請確認檔案是否正確。")
+                st.warning("⚠️ 掃描了整份文件，但找不到任何像表格的結構。請確認 PDF 是否為掃描圖片檔。")
+                st.caption("提示：此工具僅能處理「文字版 PDF」，若是「照片/掃描檔」需要使用 OCR 技術。")
                 
     except Exception as e:
-        st.error(f"發生錯誤：{e}")
+        st.error(f"❌ 發生錯誤：{e}")
+
+else:
+    st.info("👆 請上傳 PDF 以開始轉換")
