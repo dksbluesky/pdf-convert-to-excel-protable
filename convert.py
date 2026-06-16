@@ -254,6 +254,33 @@ def build_json(data: dict, is_ocr: bool) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+@st.cache_data(show_spinner=False)
+def extract_text_pages(pdf_bytes: bytes) -> dict:
+    """Extract plain text per page for editable Word output."""
+    result = {}
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text() or ""
+            if text.strip():
+                result[f"Page {i+1}"] = text.strip()
+    return result
+
+
+def build_word_editable(pdf_bytes: bytes) -> bytes:
+    """Clean editable Word doc — plain paragraphs, no floating boxes."""
+    pages = extract_text_pages(pdf_bytes)
+    doc = Document()
+    for page_label, text in pages.items():
+        doc.add_heading(page_label, level=1)
+        for line in text.splitlines():
+            if line.strip():
+                doc.add_paragraph(line.strip())
+        doc.add_paragraph()
+    out = BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
 # ──────────────────────────────────────────────
 # Main UI
 # ──────────────────────────────────────────────
@@ -298,6 +325,15 @@ with col_ocr:
         if rec.get("use_ocr"):
             st.warning("偵測到掃描版，但 OCR 未安裝。")
 
+# Word mode toggle — only shown when Word is selected
+word_editable = False
+if output_format == "Word (.docx)" and not use_ocr:
+    word_editable = st.toggle(
+        "✏️ 可編輯優先（純文字段落）",
+        value=False,
+        help="關閉：保留原始版面（pdf2docx，部分內容可能為文字框）\n開啟：輸出為乾淨可編輯段落（無版面，但可直接在 Word 修改）"
+    )
+
 # ── Convert ───────────────────────────────────
 st.divider()
 with st.spinner("轉換中，請稍候..."):
@@ -323,7 +359,10 @@ if fmt == "Excel (.xlsx)":
     mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 elif fmt == "Word (.docx)":
-    file_bytes = build_word(pdf_bytes, is_ocr, ocr_data=data if is_ocr else None)
+    if word_editable:
+        file_bytes = build_word_editable(pdf_bytes)
+    else:
+        file_bytes = build_word(pdf_bytes, is_ocr, ocr_data=data if is_ocr else None)
     file_name = f"{base_name}_{timestamp}.docx"
     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
