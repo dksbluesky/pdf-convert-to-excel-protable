@@ -266,16 +266,31 @@ def extract_text_pages(pdf_bytes: bytes) -> dict:
     return result
 
 
-def build_word_editable(pdf_bytes: bytes) -> bytes:
-    """Clean editable Word doc — plain paragraphs, no floating boxes."""
+def build_word_editable(pdf_bytes: bytes, table_data: dict = None) -> bytes:
+    """Clean editable Word doc — plain paragraphs, no floating boxes.
+    Falls back to table_data rows when plain text extraction returns nothing."""
     pages = extract_text_pages(pdf_bytes)
     doc = Document()
-    for page_label, text in pages.items():
-        doc.add_heading(page_label, level=1)
-        for line in text.splitlines():
-            if line.strip():
-                doc.add_paragraph(line.strip())
-        doc.add_paragraph()
+
+    if pages:
+        for page_label, text in pages.items():
+            doc.add_heading(page_label, level=1)
+            for line in text.splitlines():
+                if line.strip():
+                    doc.add_paragraph(line.strip())
+            doc.add_paragraph()
+    elif table_data:
+        # Fallback: render extracted table rows as plain text paragraphs
+        for page_label, df in table_data.items():
+            doc.add_heading(page_label, level=1)
+            for _, row in df.iterrows():
+                line = "　".join(str(v) for v in row if str(v).strip())
+                if line.strip():
+                    doc.add_paragraph(line)
+            doc.add_paragraph()
+    else:
+        doc.add_paragraph("⚠️ 此 PDF 無法擷取文字，請改用 OCR 模式。")
+
     out = BytesIO()
     doc.save(out)
     return out.getvalue()
@@ -360,7 +375,7 @@ if fmt == "Excel (.xlsx)":
 
 elif fmt == "Word (.docx)":
     if word_editable:
-        file_bytes = build_word_editable(pdf_bytes)
+        file_bytes = build_word_editable(pdf_bytes, table_data=data if not is_ocr else None)
     else:
         file_bytes = build_word(pdf_bytes, is_ocr, ocr_data=data if is_ocr else None)
     file_name = f"{base_name}_{timestamp}.docx"
