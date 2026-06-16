@@ -3,6 +3,7 @@ import pdfplumber
 import pandas as pd
 import json
 from io import BytesIO
+from PIL import Image, ImageDraw
 
 try:
     from pdf2image import convert_from_bytes
@@ -19,7 +20,18 @@ except ImportError:
 
 FORMATS = ["Excel (.xlsx)", "Word (.docx)", "Markdown (.md)", "JSON (.json)"]
 
-st.set_page_config(page_title="PDF 轉換器", page_icon="📄", layout="wide")
+# ── Custom app icon (PDF document shape, red) ─────────────────────
+def _pdf_icon() -> Image.Image:
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([4, 2, 56, 62], radius=6, fill="#E84545")
+    d.polygon([(40, 2), (56, 2), (56, 18), (40, 18)], fill="#C42B2B")
+    d.polygon([(40, 2), (56, 18), (40, 18)], fill="#FF7070")
+    for y in [26, 34, 42, 50]:
+        d.rounded_rectangle([12, y, 48, y + 4], radius=2, fill="#FFFFFF")
+    return img
+
+st.set_page_config(page_title="PDF 轉換器", page_icon=_pdf_icon(), layout="wide")
 
 # Hide Streamlit branding
 st.markdown("""
@@ -29,7 +41,7 @@ footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📄 PDF 轉換器")
+st.title("PDF 轉換器")
 st.caption("上傳 PDF，自動偵測最佳格式並立即轉換。支援文字型與掃描版（OCR）。")
 
 # ──────────────────────────────────────────────
@@ -43,7 +55,6 @@ def analyze_pdf(pdf_bytes: bytes) -> dict:
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
             total_pages = len(pdf.pages)
             for page in pdf.pages[:min(5, total_pages)]:
-                # Try line-based first (bordered tables), then text-based (Word-style borderless tables)
                 tables = page.extract_tables() or page.extract_tables(table_settings={
                     "vertical_strategy": "text",
                     "horizontal_strategy": "text",
@@ -66,7 +77,7 @@ def analyze_pdf(pdf_bytes: bytes) -> dict:
         return {
             "format": "Excel (.xlsx)",
             "badge": "📊 表格型 PDF",
-            "reason": f"前 {min(5,total_pages)} 頁中有 {table_pages} 頁含表格，最適合匯出為 Excel。",
+            "reason": f"前 {min(5, total_pages)} 頁中有 {table_pages} 頁含表格，最適合匯出為 Excel。",
             "use_ocr": False,
         }
     elif table_pages > 0:
@@ -86,10 +97,9 @@ def analyze_pdf(pdf_bytes: bytes) -> dict:
 
 
 # ──────────────────────────────────────────────
-# Extraction (cached — re-runs only when file or mode changes)
+# Extraction (cached)
 # ──────────────────────────────────────────────
 def _unique_cols(headers: list) -> list:
-    """Deduplicate column names — e.g. ['時刻','時刻','時刻'] → ['時刻','時刻_1','時刻_2']."""
     seen: dict = {}
     out = []
     for h in headers:
@@ -108,12 +118,10 @@ def extract_tables(pdf_bytes: bytes) -> dict:
     result = {}
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages):
-            # Line-based for bordered tables (e.g. bus schedules)
             tables = page.extract_tables(table_settings={
                 "vertical_strategy": "lines",
                 "horizontal_strategy": "lines",
             })
-            # Fall back to text-based for borderless tables (e.g. Word-originated PDFs)
             if not tables:
                 tables = page.extract_tables(table_settings={
                     "vertical_strategy": "text",
@@ -126,7 +134,6 @@ def extract_tables(pdf_bytes: bytes) -> dict:
                     if not cleaned:
                         continue
                     if len(cleaned) > 1:
-                        # Deduplicate headers to avoid InvalidIndexError on repeat column names
                         headers = _unique_cols(cleaned[0])
                         df = pd.DataFrame(cleaned[1:], columns=headers)
                     else:
@@ -136,7 +143,6 @@ def extract_tables(pdf_bytes: bytes) -> dict:
                     try:
                         result[f"Page {i+1}"] = pd.concat(dfs, ignore_index=True)
                     except Exception:
-                        # Tables on the same page have incompatible schemas — stack with string cols
                         normed = [df.rename(columns=str) for df in dfs]
                         result[f"Page {i+1}"] = pd.concat(normed, ignore_index=True)
     return result
@@ -208,111 +214,115 @@ def build_json(data: dict, is_ocr: bool) -> str:
 # ──────────────────────────────────────────────
 uploaded = st.file_uploader("📂 上傳 PDF", type=["pdf"])
 
+# Analyze if file already uploaded — determines default format selection
 if uploaded:
     pdf_bytes = uploaded.read()
     base_name = uploaded.name.rsplit(".", 1)[0]
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-
-    # Analyze first (cached, fast)
     with st.spinner("分析 PDF 結構中..."):
         rec = analyze_pdf(pdf_bytes)
-
+    st.info(f"{rec['badge']}　　{rec['reason']}")
     rec_index = FORMATS.index(rec["format"])
+    ocr_default = rec.get("use_ocr", False)
+else:
+    pdf_bytes = None
+    rec = None
+    rec_index = 0
+    ocr_default = False
 
-    # ── Recommendation banner (main area — always visible on mobile) ──
-    st.info(f"{rec['badge']}　{rec['reason']}")
-
-    # ── Format picker (columns so it fits nicely on phone) ──────────
-    col_fmt, col_ocr = st.columns([3, 1])
-    with col_fmt:
-        output_format = st.radio("輸出格式", FORMATS, index=rec_index, horizontal=True)
-    with col_ocr:
+# ── Format + OCR options — ALWAYS visible ────
+st.divider()
+col_fmt, col_ocr = st.columns([4, 1])
+with col_fmt:
+    output_format = st.radio("輸出格式", FORMATS, index=rec_index, horizontal=True)
+with col_ocr:
+    if OCR_AVAILABLE:
+        use_ocr = st.checkbox(
+            "🔍 OCR 模式",
+            value=ocr_default,
+            help="掃描版 PDF 請勾選，將每頁影像化後辨識文字。"
+        )
+    else:
         use_ocr = False
-        if OCR_AVAILABLE:
-            use_ocr = st.checkbox(
-                "🔍 OCR 模式",
-                value=rec.get("use_ocr", False),
-                help="掃描版 PDF 請勾選此項，將每頁影像化後辨識文字。"
-            )
-        elif rec.get("use_ocr"):
+        if rec and rec.get("use_ocr"):
             st.warning("偵測到掃描版，但 OCR 未安裝。")
 
-    # Sidebar mirrors the same info (for desktop users)
-    with st.sidebar:
-        st.header("⚙️ 設定")
+# Sidebar
+with st.sidebar:
+    st.header("⚙️ 設定")
+    if rec:
         st.success(f"**{rec['badge']}**\n\n{rec['reason']}")
-
-    # Extract (cached)
-    st.divider()
-    with st.spinner("轉換中，請稍候..."):
-        if use_ocr and OCR_AVAILABLE:
-            data = extract_ocr(pdf_bytes)
-            is_ocr = True
-        else:
-            data = extract_tables(pdf_bytes)
-            is_ocr = False
-
-    if not data:
-        if not use_ocr:
-            st.warning("⚠️ 找不到表格結構。若為掃描版 PDF，請在左側勾選 **OCR 模式** 再試。")
-        else:
-            st.warning("⚠️ OCR 未能辨識出文字，請確認 PDF 影像品質。")
-        st.stop()
-
-    st.success(f"✅ 成功處理 {len(data)} 頁")
-
-    # Preview
-    fmt = output_format
-    st.subheader("👁️ 預覽")
-
-    if fmt == "Excel (.xlsx)":
-        for page, df in data.items():
-            with st.expander(page, expanded=True):
-                st.dataframe(df, use_container_width=True)
-        file_bytes = build_excel(data)
-        file_name = f"{base_name}_{timestamp}.xlsx"
-        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-    elif fmt == "Word (.docx)":
-        for page, content in data.items():
-            with st.expander(page, expanded=True):
-                if is_ocr:
-                    st.text(content)
-                else:
-                    st.dataframe(content, use_container_width=True)
-        file_bytes = build_word(data, is_ocr)
-        file_name = f"{base_name}_{timestamp}.docx"
-        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-    elif fmt == "Markdown (.md)":
-        md_text = build_markdown(data, is_ocr)
-        with st.expander("Markdown 預覽", expanded=True):
-            st.markdown(md_text)
-        file_bytes = md_text.encode("utf-8")
-        file_name = f"{base_name}_{timestamp}.md"
-        mime = "text/markdown"
-
-    elif fmt == "JSON (.json)":
-        json_str = build_json(data, is_ocr)
-        with st.expander("JSON 預覽", expanded=True):
-            st.json(json.loads(json_str))
-        file_bytes = json_str.encode("utf-8")
-        file_name = f"{base_name}_{timestamp}.json"
-        mime = "application/json"
-
-    # Download
-    st.divider()
-    st.download_button(
-        label=f"📥 下載 {fmt}",
-        data=file_bytes,
-        file_name=file_name,
-        mime=mime,
-        type="primary",
-        use_container_width=True,
-    )
-
-else:
-    st.info("👆 請上傳 PDF — 系統將自動偵測最佳格式並立即轉換")
-    with st.sidebar:
-        st.header("⚙️ 設定")
+    else:
         st.info("上傳 PDF 後將自動偵測最佳格式。")
+
+# ── Process only when file is uploaded ───────
+if not uploaded:
+    st.stop()
+
+st.divider()
+with st.spinner("轉換中，請稍候..."):
+    if use_ocr and OCR_AVAILABLE:
+        data = extract_ocr(pdf_bytes)
+        is_ocr = True
+    else:
+        data = extract_tables(pdf_bytes)
+        is_ocr = False
+
+if not data:
+    if not use_ocr:
+        st.warning("⚠️ 找不到表格結構。若為掃描版 PDF，請勾選上方 **OCR 模式** 再試。")
+    else:
+        st.warning("⚠️ OCR 未能辨識出文字，請確認 PDF 影像品質。")
+    st.stop()
+
+st.success(f"✅ 成功處理 {len(data)} 頁")
+
+# ── Preview ───────────────────────────────────
+fmt = output_format
+st.subheader("👁️ 預覽")
+
+if fmt == "Excel (.xlsx)":
+    for page, df in data.items():
+        with st.expander(page, expanded=True):
+            st.dataframe(df, use_container_width=True)
+    file_bytes = build_excel(data)
+    file_name = f"{base_name}_{timestamp}.xlsx"
+    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+elif fmt == "Word (.docx)":
+    for page, content in data.items():
+        with st.expander(page, expanded=True):
+            if is_ocr:
+                st.text(content)
+            else:
+                st.dataframe(content, use_container_width=True)
+    file_bytes = build_word(data, is_ocr)
+    file_name = f"{base_name}_{timestamp}.docx"
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+elif fmt == "Markdown (.md)":
+    md_text = build_markdown(data, is_ocr)
+    with st.expander("Markdown 預覽", expanded=True):
+        st.markdown(md_text)
+    file_bytes = md_text.encode("utf-8")
+    file_name = f"{base_name}_{timestamp}.md"
+    mime = "text/markdown"
+
+elif fmt == "JSON (.json)":
+    json_str = build_json(data, is_ocr)
+    with st.expander("JSON 預覽", expanded=True):
+        st.json(json.loads(json_str))
+    file_bytes = json_str.encode("utf-8")
+    file_name = f"{base_name}_{timestamp}.json"
+    mime = "application/json"
+
+# ── Download ──────────────────────────────────
+st.divider()
+st.download_button(
+    label=f"📥 下載 {fmt}",
+    data=file_bytes,
+    file_name=file_name,
+    mime=mime,
+    type="primary",
+    use_container_width=True,
+)
