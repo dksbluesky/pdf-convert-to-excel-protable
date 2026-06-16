@@ -219,23 +219,28 @@ if uploaded:
 
     rec_index = FORMATS.index(rec["format"])
 
-    # Sidebar — show recommendation + allow override
+    # ── Recommendation banner (main area — always visible on mobile) ──
+    st.info(f"{rec['badge']}　{rec['reason']}")
+
+    # ── Format picker (columns so it fits nicely on phone) ──────────
+    col_fmt, col_ocr = st.columns([3, 1])
+    with col_fmt:
+        output_format = st.radio("輸出格式", FORMATS, index=rec_index, horizontal=True)
+    with col_ocr:
+        use_ocr = False
+        if OCR_AVAILABLE:
+            use_ocr = st.checkbox(
+                "🔍 OCR 模式",
+                value=rec.get("use_ocr", False),
+                help="掃描版 PDF 請勾選此項，將每頁影像化後辨識文字。"
+            )
+        elif rec.get("use_ocr"):
+            st.warning("偵測到掃描版，但 OCR 未安裝。")
+
+    # Sidebar mirrors the same info (for desktop users)
     with st.sidebar:
         st.header("⚙️ 設定")
         st.success(f"**{rec['badge']}**\n\n{rec['reason']}")
-        output_format = st.radio("輸出格式", FORMATS, index=rec_index)
-
-        st.divider()
-        use_ocr = rec.get("use_ocr", False)
-        if OCR_AVAILABLE:
-            use_ocr = st.checkbox(
-                "🔍 OCR 模式（掃描版 PDF）",
-                value=rec.get("use_ocr", False),
-                help="將每頁轉成影像再辨識文字。表格結構可能不完整。"
-            )
-        else:
-            if rec.get("use_ocr"):
-                st.warning("⚠️ 偵測到掃描版，但 OCR 套件未安裝。")
 
     # Extract (cached)
     st.divider()
@@ -307,8 +312,7 @@ if uploaded:
     )
 
 else:
+    st.info("👆 請上傳 PDF — 系統將自動偵測最佳格式並立即轉換")
     with st.sidebar:
         st.header("⚙️ 設定")
         st.info("上傳 PDF 後將自動偵測最佳格式。")
-        st.radio("輸出格式", FORMATS, index=0, disabled=True)
-    st.info("👆 請上傳 PDF 開始轉換")
