@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PDF 轉換器</title>
+
+  <!-- PWA / Home screen -->
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="PDF轉換器">
+  <meta name="theme-color" content="#E63946">
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --red: #E63946;
+      --red-dark: #C1121F;
+      --green: #34C759;
+      --bg: #F2F2F7;
+      --card: #FFFFFF;
+      --text: #1C1C1E;
+      --text-2: #3C3C43;
+      --text-3: #8E8E93;
+      --sep: #C6C6C8;
+      --radius-card: 16px;
+      --radius-inner: 10px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding-bottom: env(safe-area-inset-bottom, 20px);
+    }
+
+    .container {
+      max-width: 560px;
+      margin: 0 auto;
+      padding: 0 16px 32px;
+    }
+
+    /* ── Header ── */
+    header {
+      text-align: center;
+      padding: 32px 0 20px;
+    }
+
+    .logo { font-size: 48px; line-height: 1; }
+
+    header h1 {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--red);
+      margin-top: 8px;
+    }
+
+    header p {
+      font-size: 14px;
+      color: var(--text-3);
+      margin-top: 4px;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: var(--card);
+      border-radius: var(--radius-card);
+      padding: 18px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 0 rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.04);
+    }
+
+    .card-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-3);
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      margin-bottom: 10px;
+    }
+
+    /* ── Upload ── */
+    .upload-zone {
+      border: 2px dashed var(--sep);
+      border-radius: var(--radius-inner);
+      padding: 36px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    .upload-zone:hover,
+    .upload-zone.drag { border-color: var(--red); background: #FFF5F5; }
+
+    .upload-zone.ready {
+      border-color: var(--green);
+      border-style: solid;
+      background: #F0FDF4;
+    }
+
+    .upload-icon { font-size: 44px; line-height: 1; }
+    .upload-main { margin-top: 10px; font-size: 16px; font-weight: 500; color: var(--text-2); }
+    .upload-sub  { margin-top: 3px; font-size: 13px; color: var(--text-3); }
+    .upload-name { margin-top: 6px; font-size: 14px; font-weight: 600; color: var(--green); }
+
+    #fileInput { display: none; }
+
+    /* ── Badge ── */
+    #badge {
+      display: none;
+      border-radius: var(--radius-card);
+      padding: 14px 18px;
+      margin-bottom: 12px;
+    }
+
+    #badge.show { display: block; }
+
+    #badge.excel  { background: #E8F8EC; }
+    #badge.word   { background: #EBF2FF; }
+    #badge.md     { background: #F5F5F5; }
+    #badge.json   { background: #FFF8E1; }
+    #badge.scanned { background: #FFF0F0; }
+
+    .badge-title  { font-size: 20px; font-weight: 700; }
+    .badge-reason { font-size: 13px; color: var(--text-3); margin-top: 3px; }
+
+    /* ── Format grid ── */
+    .fmt-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .fmt-btn {
+      padding: 13px 8px;
+      border: 2px solid var(--sep);
+      border-radius: var(--radius-inner);
+      background: var(--card);
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-2);
+      cursor: pointer;
+      transition: border-color .12s, background .12s, color .12s;
+      text-align: center;
+    }
+
+    .fmt-btn:hover    { border-color: var(--red); color: var(--red); }
+    .fmt-btn.selected { border-color: var(--red); background: var(--red); color: #fff; }
+
+    /* ── Toggles ── */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-top: 1px solid var(--bg);
+    }
+
+    .toggle-info .tl { font-size: 15px; }
+    .toggle-info .th { font-size: 12px; color: var(--text-3); margin-top: 1px; }
+
+    .sw { position: relative; display: inline-block; width: 51px; height: 31px; flex-shrink: 0; }
+    .sw input { opacity: 0; width: 0; height: 0; }
+
+    .sw-track {
+      position: absolute; inset: 0;
+      background: #E5E5EA;
+      border-radius: 31px;
+      cursor: pointer;
+      transition: background .2s;
+    }
+
+    .sw-track::after {
+      content: '';
+      position: absolute;
+      width: 27px; height: 27px;
+      top: 2px; left: 2px;
+      background: #fff;
+      border-radius: 50%;
+      box-shadow: 0 1px 4px rgba(0,0,0,.25);
+      transition: transform .2s;
+    }
+
+    .sw input:checked ~ .sw-track { background: var(--green); }
+    .sw input:checked ~ .sw-track::after { transform: translateX(20px); }
+
+    #wordOpts { display: none; }
+    #wordOpts.show { display: block; }
+    #ocrRow { border-top: 1px solid var(--bg); }
+
+    /* ── Legend ── */
+    .legend {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 12px;
+      font-size: 13px;
+      color: var(--text-3);
+    }
+
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+
+    /* ── Convert button ── */
+    #convertBtn {
+      width: 100%;
+      padding: 16px;
+      background: var(--red);
+      color: #fff;
+      border: none;
+      border-radius: 14px;
+      font-size: 17px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    #convertBtn:hover:not(:disabled) { background: var(--red-dark); }
+    #convertBtn:disabled { background: #C7C7CC; cursor: not-allowed; }
+
+    /* ── Status ── */
+    #status {
+      text-align: center;
+      font-size: 14px;
+      color: var(--text-3);
+      margin-top: 10px;
+      min-height: 20px;
+    }
+
+    #status.err { color: var(--red); }
+    #status.ok  { color: var(--green); }
+
+    /* ── Spinner ── */
+    .spin {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border: 2.5px solid rgba(255,255,255,.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: rot .65s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes rot { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="logo">📄</div>
+    <h1>PDF 轉換器</h1>
+    <p>上傳後自動偵測類型，選格式，一鍵下載</p>
+  </header>
+
+  <!-- Upload -->
+  <div class="card" style="padding: 0;">
+    <div class="upload-zone" id="uploadZone" role="button" aria-label="上傳 PDF">
+      <div class="upload-icon" id="uploadIcon">📂</div>
+      <div class="upload-main">點此上傳 PDF</div>
+      <div class="upload-sub">或拖曳至此 · 最大 50 MB</div>
+      <div class="upload-name" id="uploadName"></div>
+    </div>
+    <input type="file" id="fileInput" accept=".pdf">
+  </div>
+
+  <!-- Badge -->
+  <div id="badge">
+    <div class="badge-title" id="badgeTitle"></div>
+    <div class="badge-reason" id="badgeReason"></div>
+  </div>
+
+  <!-- Format -->
+  <div class="card">
+    <div class="card-label">輸出格式</div>
+    <div class="fmt-grid">
+      <button class="fmt-btn selected" data-fmt="excel">📊 Excel</button>
+      <button class="fmt-btn" data-fmt="word">📝 Word</button>
+      <button class="fmt-btn" data-fmt="markdown">📄 Markdown</button>
+      <button class="fmt-btn" data-fmt="json">🗂 JSON</button>
+    </div>
+
+    <!-- Word options -->
+    <div id="wordOpts">
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <div class="tl">✏️ 可編輯優先</div>
+          <div class="th">關閉：保留版面｜開啟：純文字段落</div>
+        </div>
+        <label class="sw">
+          <input type="checkbox" id="wordEditable">
+          <span class="sw-track"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- OCR toggle -->
+    {% if ocr_available %}
+    <div class="toggle-row" id="ocrRow">
+      <div class="toggle-info">
+        <div class="tl">🔍 OCR 模式</div>
+        <div class="th">掃描版 PDF 請開啟</div>
+      </div>
+      <label class="sw">
+        <input type="checkbox" id="ocrToggle">
+        <span class="sw-track"></span>
+      </label>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Legend (visible before upload) -->
+  <div class="card" id="legend">
+    <div class="card-label">自動偵測說明</div>
+    <div class="legend">
+      <div class="legend-item">📊 <span>表格型 → Excel</span></div>
+      <div class="legend-item">📝 <span>混合型 → Word</span></div>
+      <div class="legend-item">📄 <span>純文字 → Markdown</span></div>
+      <div class="legend-item">🔍 <span>掃描版 → OCR + Word</span></div>
+    </div>
+  </div>
+
+  <!-- Convert -->
+  <button id="convertBtn" disabled>
+    <span id="btnLabel">請先上傳 PDF</span>
+  </button>
+
+  <div id="status"></div>
+
+</div><!-- /container -->
+
+<script>
+const FMT_LABEL = { excel:'📊 Excel', word:'📝 Word', markdown:'📄 Markdown', json:'🗂 JSON' };
+const FMT_BADGE_CLS = { excel:'excel', word:'word', markdown:'md', json:'json', scanned:'scanned' };
+
+let selFile = null;
+let selFmt  = 'excel';
+
+const zone      = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+const uploadIcon= document.getElementById('uploadIcon');
+const uploadName= document.getElementById('uploadName');
+const badge     = document.getElementById('badge');
+const badgeTitle= document.getElementById('badgeTitle');
+const badgeRsn  = document.getElementById('badgeReason');
+const legend    = document.getElementById('legend');
+const wordOpts  = document.getElementById('wordOpts');
+const convertBtn= document.getElementById('convertBtn');
+const btnLabel  = document.getElementById('btnLabel');
+const status    = document.getElementById('status');
+
+// ── Upload interactions ──────────────────────────────
+zone.addEventListener('click', () => fileInput.click());
+
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+zone.addEventListener('dragleave', ()=> zone.classList.remove('drag'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.endsWith('.pdf')) onFile(f);
+  else setStatus('⚠️ 請上傳 PDF 檔案', 'err');
+});
+
+fileInput.addEventListener('change', () => fileInput.files[0] && onFile(fileInput.files[0]));
+
+function onFile(f) {
+  selFile = f;
+  zone.classList.add('ready');
+  uploadIcon.textContent = '✅';
+  uploadName.textContent = f.name;
+  badge.className = '';
+  badge.classList.remove('show');
+  legend.style.display = 'none';
+  setStatus('');
+  setBtnLoading('分析中...');
+
+  const fd = new FormData();
+  fd.append('pdf', f);
+
+  fetch('/analyze', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(rec => {
+      badgeTitle.textContent = rec.badge;
+      badgeRsn.textContent   = rec.reason;
+      const cls = rec.use_ocr ? 'scanned'
+                : rec.format === 'excel' ? 'excel'
+                : rec.format === 'word'  ? 'word'
+                : rec.format === 'markdown' ? 'md' : 'json';
+      badge.className = 'show ' + cls;
+
+      pickFmt(rec.format);
+
+      const ocrCb = document.getElementById('ocrToggle');
+      if (ocrCb && rec.use_ocr) ocrCb.checked = true;
+
+      setBtnReady();
+    })
+    .catch(() => {
+      badge.classList.remove('show');
+      setBtnReady();
+    });
+}
+
+// ── Format ────────────────────────────────────────────
+document.querySelectorAll('.fmt-btn').forEach(b => {
+  b.addEventListener('click', () => pickFmt(b.dataset.fmt));
+});
+
+function pickFmt(fmt) {
+  selFmt = fmt;
+  document.querySelectorAll('.fmt-btn').forEach(b =>
+    b.classList.toggle('selected', b.dataset.fmt === fmt));
+  wordOpts.classList.toggle('show', fmt === 'word');
+  if (selFile && !convertBtn.disabled) {
+    btnLabel.textContent = '轉換並下載 ' + FMT_LABEL[fmt];
+  }
+}
+
+// ── Convert ───────────────────────────────────────────
+convertBtn.addEventListener('click', () => {
+  if (!selFile) return;
+
+  setBtnLoading('轉換中，請稍候...');
+  setStatus('');
+
+  const fd = new FormData();
+  fd.append('pdf', selFile);
+  fd.append('format', selFmt);
+  fd.append('filename', selFile.name.replace(/\.pdf$/i, ''));
+
+  const ocrCb = document.getElementById('ocrToggle');
+  fd.append('ocr', ocrCb && ocrCb.checked ? 'true' : 'false');
+  fd.append('word_editable', document.getElementById('wordEditable').checked ? 'true' : 'false');
+
+  fetch('/convert', { method: 'POST', body: fd })
+    .then(res => {
+      if (!res.ok) return res.json().then(e => { throw new Error(e.error || 'error'); });
+      const cd = res.headers.get('Content-Disposition') || '';
+      const m  = cd.match(/filename[^;=\n]*=(['"]?)([^\n"']+)\1/);
+      const dl = m ? m[2] : ('converted.' + selFmt);
+      return res.blob().then(b => ({ b, dl }));
+    })
+    .then(({ b, dl }) => {
+      const url = URL.createObjectURL(b);
+      const a = Object.assign(document.createElement('a'), { href: url, download: dl });
+      a.click();
+      URL.revokeObjectURL(url);
+      setBtnReady();
+      setStatus('✅ 下載完成！', 'ok');
+    })
+    .catch(err => {
+      setBtnReady();
+      if (err.message === 'no_data')
+        setStatus('⚠️ 找不到表格，請改用 OCR 模式或換其他格式。', 'err');
+      else
+        setStatus('❌ 轉換失敗：' + err.message, 'err');
+    });
+});
+
+// ── Helpers ────────────────────────────────────────────
+function setBtnLoading(txt) {
+  convertBtn.disabled = true;
+  btnLabel.innerHTML  = '<span class="spin"></span> ' + txt;
+}
+
+function setBtnReady() {
+  convertBtn.disabled = !selFile;
+  btnLabel.textContent = selFile ? ('轉換並下載 ' + FMT_LABEL[selFmt]) : '請先上傳 PDF';
+}
+
+function setStatus(msg, cls) {
+  status.textContent = msg;
+  status.className   = cls || '';
+}
+</script>
+</body>
+</html>
