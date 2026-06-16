@@ -26,15 +26,24 @@ except ImportError:
 
 FORMATS = ["Excel (.xlsx)", "Word (.docx)", "Markdown (.md)", "JSON (.json)"]
 
-# ── Custom app icon (PDF document shape, red) ─────────────────────
+# ── Custom app icon — red rounded square with white paper + arrow ──
 def _pdf_icon() -> Image.Image:
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    size = 512
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([4, 2, 56, 62], radius=6, fill="#E84545")
-    d.polygon([(40, 2), (56, 2), (56, 18), (40, 18)], fill="#C42B2B")
-    d.polygon([(40, 2), (56, 18), (40, 18)], fill="#FF7070")
-    for y in [26, 34, 42, 50]:
-        d.rounded_rectangle([12, y, 48, y + 4], radius=2, fill="#FFFFFF")
+    # Red rounded square background
+    d.rounded_rectangle([0, 0, size, size], radius=110, fill="#E63946")
+    # White document body
+    d.rounded_rectangle([100, 70, 320, 420], radius=18, fill="#FFFFFF")
+    # Folded corner (dog-ear)
+    d.polygon([(254, 70), (320, 70), (320, 136), (254, 136)], fill="#E63946")
+    d.polygon([(254, 70), (320, 136), (254, 136)], fill="#C1121F")
+    # Text lines on document
+    for y in [180, 220, 260, 300, 340]:
+        d.rounded_rectangle([130, y, 290, y + 22], radius=6, fill="#E63946")
+    # White arrow pointing right (= convert)
+    d.polygon([(360, 210), (440, 256), (360, 302)], fill="#FFFFFF")
+    d.rounded_rectangle([310, 242, 390, 270], radius=8, fill="#FFFFFF")
     return img
 
 st.set_page_config(page_title="PDF 轉換器", page_icon=_pdf_icon(), layout="wide")
@@ -251,11 +260,14 @@ def build_json(data: dict, is_ocr: bool) -> str:
 uploaded = st.file_uploader("📂 上傳 PDF", type=["pdf"])
 
 if not uploaded:
-    with st.sidebar:
-        st.header("⚙️ 設定")
-        st.info("上傳 PDF 後將自動偵測最佳格式。")
     st.divider()
-    st.radio("輸出格式", FORMATS, index=0, horizontal=True, disabled=True)
+    st.markdown("上傳後系統自動偵測類型，推薦最適格式：")
+    st.markdown(
+        "📊 **表格型** → Excel &nbsp;&nbsp;"
+        "📝 **混合型** → Word &nbsp;&nbsp;"
+        "📄 **純文字** → Markdown &nbsp;&nbsp;"
+        "🔍 **掃描版** → OCR + Word"
+    )
     st.stop()
 
 # ── File uploaded ─────────────────────────────
@@ -285,11 +297,6 @@ with col_ocr:
         use_ocr = False
         if rec.get("use_ocr"):
             st.warning("偵測到掃描版，但 OCR 未安裝。")
-
-# Sidebar mirrors badge
-with st.sidebar:
-    st.header("⚙️ 設定")
-    st.success(f"**{rec['badge']}**\n\n{rec['reason']}")
 
 # ── Convert ───────────────────────────────────
 st.divider()
