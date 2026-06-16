@@ -54,25 +54,18 @@ _icon_b64 = base64.b64encode(_icon_buf.getvalue()).decode()
 
 st.set_page_config(page_title="PDF 轉換器", page_icon=_icon_img, layout="wide")
 
-# Inject apple-touch-icon so "Add to Home Screen" on iOS/Android uses our icon
-# Also override the favicon and Streamlit branding
+# Static icon URL (served by Streamlit's static file server)
+_ICON_URL = "app/static/icon.png"
+
+# Inject apple-touch-icon via <link> — must be early for iOS "Add to Home Screen"
 st.markdown(f"""
 <style>
 #MainMenu {{visibility: hidden;}}
 footer {{visibility: hidden;}}
 </style>
-<script>
-(function() {{
-    var href = 'data:image/png;base64,{_icon_b64}';
-    ['apple-touch-icon', 'apple-touch-icon-precomposed', 'shortcut icon', 'icon'].forEach(function(rel) {{
-        var el = document.querySelector('link[rel="' + rel + '"]') || document.createElement('link');
-        el.rel = rel;
-        el.type = 'image/png';
-        el.href = href;
-        document.head.appendChild(el);
-    }});
-}})();
-</script>
+<link rel="apple-touch-icon" sizes="512x512" href="{_ICON_URL}">
+<link rel="apple-touch-icon-precomposed" sizes="512x512" href="{_ICON_URL}">
+<link rel="shortcut icon" type="image/png" href="{_ICON_URL}">
 """, unsafe_allow_html=True)
 
 st.title("PDF 轉換器")
