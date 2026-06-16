@@ -2,3 +2,7 @@ streamlit
 pandas
 pdfplumber
 openpyxl
+python-docx
+tabulate
+pytesseract
+pdf2image

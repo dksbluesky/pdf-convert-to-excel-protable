@@ -1,81 +1,239 @@
 import streamlit as st
 import pdfplumber
 import pandas as pd
+import json
 from io import BytesIO
 
-# ==========================================
-# 頁面設定
-# ==========================================
-st.set_page_config(page_title="萬用 PDF 轉 Excel 工具", page_icon="📑")
-st.title("📑 萬用 PDF 轉 Excel 轉換器")
-st.markdown("""
-**長久需求專用版**：不限高鐵，任何 PDF 報表皆可嘗試轉換。
-程式會自動偵測每一頁的表格，並將其存為 Excel 的不同工作表。
-""")
+# OCR support — needs Tesseract + poppler installed (or packages.txt on Streamlit Cloud)
+try:
+    from pdf2image import convert_from_bytes
+    import pytesseract
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
 
-# ==========================================
-# 檔案上傳
-# ==========================================
-uploaded_file = st.file_uploader("📂 請上傳包含表格的 PDF 檔", type=["pdf"])
+try:
+    from docx import Document
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 
-if uploaded_file is not None:
-    st.info("🔄 正在分析文件結構，請稍候...")
-    
-    try:
-        all_page_data = [] # 用來暫存每一頁抓到的 DataFrame 資訊
-        
-        with pdfplumber.open(uploaded_file) as pdf:
-            total_pages = len(pdf.pages)
-            progress_bar = st.progress(0)
-            
-            for i, page in enumerate(pdf.pages):
-                # 這裡加入了 table_settings，對於表單類型的 PDF 較友善
-                tables = page.extract_tables(table_settings={
-                    "vertical_strategy": "lines", 
-                    "horizontal_strategy": "lines",
-                })
-                
-                if tables:
-                    page_df_list = []
-                    for table in tables:
-                        df = pd.DataFrame(table).astype(str)
-                        df = df.replace("None", "")
-                        page_df_list.append(df)
-                    
-                    if page_df_list:
-                        combined_df = pd.concat(page_df_list, ignore_index=True)
-                        all_page_data.append((f"Page_{i+1}", combined_df))
-                
-                progress_bar.progress((i + 1) / total_pages)
+# ──────────────────────────────────────────────
+# Page config
+# ──────────────────────────────────────────────
+st.set_page_config(page_title="萬用 PDF 轉換器", page_icon="📑", layout="wide")
+st.title("📑 萬用 PDF 轉換器")
+st.markdown("上傳 PDF，選擇格式，預覽後下載。支援文字型與掃描版 PDF（OCR）。")
 
-        # =======================================================
-        # 判斷是否有抓到資料，才執行 Excel 寫入
-        # =======================================================
-        if all_page_data:
-            output = BytesIO()
-            # 只有在確定有資料時，才開啟 ExcelWriter
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                for sheet_name, df in all_page_data:
-                    df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
-            
-            st.success(f"✅ 轉換完成！共成功處理 {len(all_page_data)} 頁表格。")
-            
-            output.seek(0)
-            timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-            original_name = uploaded_file.name.rsplit('.', 1)[0]
-            file_name = f"{original_name}_converted_{timestamp}.xlsx"
-            
-            st.download_button(
-                label="📥 下載 Excel 檔案",
-                data=output,
-                file_name=file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# ──────────────────────────────────────────────
+# Sidebar options
+# ──────────────────────────────────────────────
+with st.sidebar:
+    st.header("⚙️ 設定")
+
+    output_format = st.radio(
+        "輸出格式",
+        ["Excel (.xlsx)", "Word (.docx)", "Markdown (.md)", "JSON (.json)"],
+        index=0,
+    )
+
+    st.divider()
+
+    use_ocr = False
+    if OCR_AVAILABLE:
+        use_ocr = st.checkbox("🔍 OCR 模式（掃描版 PDF）", value=False)
+        if use_ocr:
+            st.info(
+                "OCR 模式會將每頁轉成影像再辨識文字。"
+                "表格結構可能不完整，但至少能取得文字內容。"
+            )
+    else:
+        st.warning(
+            "**OCR 功能未啟用**\n\n"
+            "需要系統安裝：\n"
+            "- Tesseract OCR\n"
+            "- poppler\n\n"
+            "並執行：\n"
+            "```\npip install pytesseract pdf2image\n```"
+        )
+
+# ──────────────────────────────────────────────
+# Extraction helpers
+# ──────────────────────────────────────────────
+def extract_tables(pdf_bytes: bytes) -> dict:
+    """Extract tables from a text-based PDF. Returns {page_label: DataFrame}."""
+    result = {}
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+        total = len(pdf.pages)
+        bar = st.progress(0, text="掃描頁面中...")
+        for i, page in enumerate(pdf.pages):
+            tables = page.extract_tables(table_settings={
+                "vertical_strategy": "lines",
+                "horizontal_strategy": "lines",
+            })
+            if tables:
+                dfs = []
+                for t in tables:
+                    cleaned = [[c if c is not None else "" for c in row] for row in t]
+                    if len(cleaned) > 1:
+                        df = pd.DataFrame(cleaned[1:], columns=cleaned[0])
+                    else:
+                        df = pd.DataFrame(cleaned)
+                    dfs.append(df.astype(str).replace("None", ""))
+                if dfs:
+                    result[f"Page {i + 1}"] = pd.concat(dfs, ignore_index=True)
+            bar.progress((i + 1) / total, text=f"處理第 {i + 1} / {total} 頁...")
+        bar.empty()
+    return result
+
+
+def extract_ocr(pdf_bytes: bytes) -> dict:
+    """Convert each PDF page to image and OCR it. Returns {page_label: text}."""
+    images = convert_from_bytes(pdf_bytes, dpi=300)
+    result = {}
+    bar = st.progress(0, text="OCR 辨識中...")
+    for i, img in enumerate(images):
+        # Try Traditional Chinese + English; falls back gracefully if lang pack missing
+        try:
+            text = pytesseract.image_to_string(img, lang="chi_tra+eng")
+        except pytesseract.TesseractError:
+            text = pytesseract.image_to_string(img)
+        if text.strip():
+            result[f"Page {i + 1}"] = text.strip()
+        bar.progress((i + 1) / len(images), text=f"OCR 第 {i + 1} / {len(images)} 頁...")
+    bar.empty()
+    return result
+
+# ──────────────────────────────────────────────
+# Build output helpers
+# ──────────────────────────────────────────────
+def build_excel(data: dict) -> bytes:
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        for sheet, df in data.items():
+            df.to_excel(writer, sheet_name=sheet[:31], index=False)
+    return out.getvalue()
+
+
+def build_word(data: dict, is_ocr: bool) -> bytes:
+    doc = Document()
+    doc.add_heading("PDF 轉換結果", level=0)
+    for page, content in data.items():
+        doc.add_heading(page, level=1)
+        if is_ocr:
+            doc.add_paragraph(content)
+        else:
+            df: pd.DataFrame = content
+            tbl = doc.add_table(rows=1 + len(df), cols=len(df.columns))
+            tbl.style = "Table Grid"
+            for j, col in enumerate(df.columns):
+                tbl.rows[0].cells[j].text = str(col)
+            for i, row in df.iterrows():
+                for j, val in enumerate(row):
+                    tbl.rows[i + 1].cells[j].text = str(val)
+            doc.add_paragraph()
+    out = BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def build_markdown(data: dict, is_ocr: bool) -> str:
+    parts = ["# PDF 轉換結果\n"]
+    for page, content in data.items():
+        parts.append(f"\n## {page}\n")
+        if is_ocr:
+            parts.append(content)
+        else:
+            parts.append(content.to_markdown(index=False))
+        parts.append("\n")
+    return "\n".join(parts)
+
+
+def build_json(data: dict, is_ocr: bool) -> str:
+    if is_ocr:
+        payload = data
+    else:
+        payload = {page: df.to_dict(orient="records") for page, df in data.items()}
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+# ──────────────────────────────────────────────
+# Main UI
+# ──────────────────────────────────────────────
+uploaded = st.file_uploader("📂 上傳 PDF", type=["pdf"])
+
+if uploaded:
+    pdf_bytes = uploaded.read()
+    base_name = uploaded.name.rsplit(".", 1)[0]
+    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+
+    st.divider()
+
+    with st.spinner("處理中，請稍候..."):
+        if use_ocr:
+            data = extract_ocr(pdf_bytes)
+            is_ocr = True
+        else:
+            data = extract_tables(pdf_bytes)
+            is_ocr = False
+
+    if not data:
+        if not use_ocr:
+            st.warning(
+                "⚠️ 找不到任何表格結構。\n\n"
+                "若為掃描版 PDF，請在左側勾選 **OCR 模式** 再重試。"
             )
         else:
-            st.warning("⚠️ 掃描了整份文件，但找不到任何像表格的結構。這可能是因為 PDF 是掃描影像（圖片）而非文字格式。")
-            
-    except Exception as e:
-        st.error(f"❌ 發生錯誤：{e}")
+            st.warning("⚠️ OCR 未能辨識出任何文字，請確認 PDF 影像品質。")
+        st.stop()
+
+    st.success(f"✅ 成功處理 {len(data)} 頁")
+
+    # ── Build output & preview ─────────────────
+    fmt = output_format
+    st.subheader("👁️ 預覽")
+
+    if fmt == "Excel (.xlsx)":
+        for page, df in data.items():
+            with st.expander(page, expanded=True):
+                st.dataframe(df, use_container_width=True)
+        file_bytes = build_excel(data)
+        file_name = f"{base_name}_{timestamp}.xlsx"
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    elif fmt == "Word (.docx)":
+        for page, content in data.items():
+            with st.expander(page, expanded=True):
+                st.text(content) if is_ocr else st.dataframe(content, use_container_width=True)
+        file_bytes = build_word(data, is_ocr)
+        file_name = f"{base_name}_{timestamp}.docx"
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    elif fmt == "Markdown (.md)":
+        md_text = build_markdown(data, is_ocr)
+        with st.expander("Markdown 預覽", expanded=True):
+            st.markdown(md_text)
+        file_bytes = md_text.encode("utf-8")
+        file_name = f"{base_name}_{timestamp}.md"
+        mime = "text/markdown"
+
+    elif fmt == "JSON (.json)":
+        json_str = build_json(data, is_ocr)
+        with st.expander("JSON 預覽", expanded=True):
+            st.json(json.loads(json_str))
+        file_bytes = json_str.encode("utf-8")
+        file_name = f"{base_name}_{timestamp}.json"
+        mime = "application/json"
+
+    # ── Download ───────────────────────────────
+    st.divider()
+    st.download_button(
+        label=f"📥 確認並下載 {fmt}",
+        data=file_bytes,
+        file_name=file_name,
+        mime=mime,
+        type="primary",
+        use_container_width=True,
+    )
 
 else:
-    st.info("👆 請上傳 PDF 以開始轉換")
+    st.info("👆 請上傳 PDF 開始轉換")
