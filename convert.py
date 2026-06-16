@@ -43,7 +43,12 @@ def analyze_pdf(pdf_bytes: bytes) -> dict:
         with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
             total_pages = len(pdf.pages)
             for page in pdf.pages[:min(5, total_pages)]:
-                if page.extract_tables():
+                # Try line-based first (bordered tables), then text-based (Word-style borderless tables)
+                tables = page.extract_tables() or page.extract_tables(table_settings={
+                    "vertical_strategy": "text",
+                    "horizontal_strategy": "text",
+                })
+                if tables:
                     table_pages += 1
                 if (page.extract_text() or "").strip():
                     text_pages += 1
@@ -103,10 +108,17 @@ def extract_tables(pdf_bytes: bytes) -> dict:
     result = {}
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages):
+            # Line-based for bordered tables (e.g. bus schedules)
             tables = page.extract_tables(table_settings={
                 "vertical_strategy": "lines",
                 "horizontal_strategy": "lines",
             })
+            # Fall back to text-based for borderless tables (e.g. Word-originated PDFs)
+            if not tables:
+                tables = page.extract_tables(table_settings={
+                    "vertical_strategy": "text",
+                    "horizontal_strategy": "text",
+                })
             if tables:
                 dfs = []
                 for t in tables:
@@ -259,7 +271,10 @@ if uploaded:
     elif fmt == "Word (.docx)":
         for page, content in data.items():
             with st.expander(page, expanded=True):
-                st.text(content) if is_ocr else st.dataframe(content, use_container_width=True)
+                if is_ocr:
+                    st.text(content)
+                else:
+                    st.dataframe(content, use_container_width=True)
         file_bytes = build_word(data, is_ocr)
         file_name = f"{base_name}_{timestamp}.docx"
         mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
