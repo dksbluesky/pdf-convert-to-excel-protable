@@ -83,6 +83,21 @@ def analyze_pdf(pdf_bytes: bytes) -> dict:
 # ──────────────────────────────────────────────
 # Extraction (cached — re-runs only when file or mode changes)
 # ──────────────────────────────────────────────
+def _unique_cols(headers: list) -> list:
+    """Deduplicate column names — e.g. ['時刻','時刻','時刻'] → ['時刻','時刻_1','時刻_2']."""
+    seen: dict = {}
+    out = []
+    for h in headers:
+        key = h if h else "col"
+        if key in seen:
+            seen[key] += 1
+            out.append(f"{key}_{seen[key]}")
+        else:
+            seen[key] = 0
+            out.append(key)
+    return out
+
+
 @st.cache_data(show_spinner=False)
 def extract_tables(pdf_bytes: bytes) -> dict:
     result = {}
@@ -96,13 +111,22 @@ def extract_tables(pdf_bytes: bytes) -> dict:
                 dfs = []
                 for t in tables:
                     cleaned = [[c if c is not None else "" for c in row] for row in t]
+                    if not cleaned:
+                        continue
                     if len(cleaned) > 1:
-                        df = pd.DataFrame(cleaned[1:], columns=cleaned[0])
+                        # Deduplicate headers to avoid InvalidIndexError on repeat column names
+                        headers = _unique_cols(cleaned[0])
+                        df = pd.DataFrame(cleaned[1:], columns=headers)
                     else:
                         df = pd.DataFrame(cleaned)
                     dfs.append(df.astype(str).replace("None", ""))
                 if dfs:
-                    result[f"Page {i+1}"] = pd.concat(dfs, ignore_index=True)
+                    try:
+                        result[f"Page {i+1}"] = pd.concat(dfs, ignore_index=True)
+                    except Exception:
+                        # Tables on the same page have incompatible schemas — stack with string cols
+                        normed = [df.rename(columns=str) for df in dfs]
+                        result[f"Page {i+1}"] = pd.concat(normed, ignore_index=True)
     return result
 
 
