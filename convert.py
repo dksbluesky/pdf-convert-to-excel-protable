@@ -2,6 +2,7 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import json
+import base64
 from io import BytesIO
 from PIL import Image, ImageDraw
 
@@ -46,14 +47,32 @@ def _pdf_icon() -> Image.Image:
     d.rounded_rectangle([310, 242, 390, 270], radius=8, fill="#FFFFFF")
     return img
 
-st.set_page_config(page_title="PDF 轉換器", page_icon=_pdf_icon(), layout="wide")
+_icon_img = _pdf_icon()
+_icon_buf = BytesIO()
+_icon_img.save(_icon_buf, format="PNG")
+_icon_b64 = base64.b64encode(_icon_buf.getvalue()).decode()
 
-# Hide Streamlit branding
-st.markdown("""
+st.set_page_config(page_title="PDF 轉換器", page_icon=_icon_img, layout="wide")
+
+# Inject apple-touch-icon so "Add to Home Screen" on iOS/Android uses our icon
+# Also override the favicon and Streamlit branding
+st.markdown(f"""
 <style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
+#MainMenu {{visibility: hidden;}}
+footer {{visibility: hidden;}}
 </style>
+<script>
+(function() {{
+    var href = 'data:image/png;base64,{_icon_b64}';
+    ['apple-touch-icon', 'apple-touch-icon-precomposed', 'shortcut icon', 'icon'].forEach(function(rel) {{
+        var el = document.querySelector('link[rel="' + rel + '"]') || document.createElement('link');
+        el.rel = rel;
+        el.type = 'image/png';
+        el.href = href;
+        document.head.appendChild(el);
+    }});
+}})();
+</script>
 """, unsafe_allow_html=True)
 
 st.title("PDF 轉換器")
