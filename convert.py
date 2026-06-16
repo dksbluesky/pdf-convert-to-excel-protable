@@ -18,6 +18,12 @@ try:
 except ImportError:
     DOCX_AVAILABLE = False
 
+try:
+    from pdf2docx import Converter as PDF2Docx
+    PDF2DOCX_AVAILABLE = True
+except ImportError:
+    PDF2DOCX_AVAILABLE = False
+
 FORMATS = ["Excel (.xlsx)", "Word (.docx)", "Markdown (.md)", "JSON (.json)"]
 
 # ── Custom app icon (PDF document shape, red) ─────────────────────
@@ -173,23 +179,53 @@ def build_excel(data: dict) -> bytes:
     return out.getvalue()
 
 
-def build_word(data: dict, is_ocr: bool) -> bytes:
+def build_word(pdf_bytes: bytes, is_ocr: bool, ocr_data: dict = None) -> bytes:
+    """
+    Word conversion strategy:
+    - Normal PDF  → pdf2docx for high-fidelity layout recreation (fonts, tables, formatting)
+    - OCR result  → plain docx with extracted text (no layout info available)
+    - Fallback    → plain docx from extracted table data
+    """
+    if is_ocr and ocr_data:
+        doc = Document()
+        doc.add_heading("PDF 轉換結果（OCR）", level=0)
+        for page, text in ocr_data.items():
+            doc.add_heading(page, level=1)
+            doc.add_paragraph(text)
+        out = BytesIO()
+        doc.save(out)
+        return out.getvalue()
+
+    if PDF2DOCX_AVAILABLE:
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(pdf_bytes)
+            tmp_pdf = f.name
+        tmp_docx = tmp_pdf.replace(".pdf", ".docx")
+        try:
+            cv = PDF2Docx(tmp_pdf)
+            cv.convert(tmp_docx, start=0, end=None)
+            cv.close()
+            with open(tmp_docx, "rb") as f:
+                return f.read()
+        finally:
+            os.unlink(tmp_pdf)
+            if os.path.exists(tmp_docx):
+                os.unlink(tmp_docx)
+
+    # Fallback if pdf2docx not available
     doc = Document()
     doc.add_heading("PDF 轉換結果", level=0)
-    for page, content in data.items():
+    for page, df in (ocr_data or {}).items():
         doc.add_heading(page, level=1)
-        if is_ocr:
-            doc.add_paragraph(content)
-        else:
-            df: pd.DataFrame = content
-            tbl = doc.add_table(rows=1 + len(df), cols=len(df.columns))
-            tbl.style = "Table Grid"
-            for j, col in enumerate(df.columns):
-                tbl.rows[0].cells[j].text = str(col)
-            for i, row in df.iterrows():
-                for j, val in enumerate(row):
-                    tbl.rows[i + 1].cells[j].text = str(val)
-            doc.add_paragraph()
+        tbl = doc.add_table(rows=1 + len(df), cols=len(df.columns))
+        tbl.style = "Table Grid"
+        for j, col in enumerate(df.columns):
+            tbl.rows[0].cells[j].text = str(col)
+        for i, row in df.iterrows():
+            for j, val in enumerate(row):
+                tbl.rows[i + 1].cells[j].text = str(val)
+        doc.add_paragraph()
     out = BytesIO()
     doc.save(out)
     return out.getvalue()
@@ -290,13 +326,17 @@ if fmt == "Excel (.xlsx)":
     mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 elif fmt == "Word (.docx)":
-    for page, content in data.items():
-        with st.expander(page, expanded=True):
-            if is_ocr:
+    if is_ocr:
+        for page, content in data.items():
+            with st.expander(page, expanded=True):
                 st.text(content)
-            else:
+    elif PDF2DOCX_AVAILABLE:
+        st.info("📝 使用高保真引擎轉換中，版面、字型與表格將盡量還原。預覽不適用，請下載後在 Word 中開啟確認。")
+    else:
+        for page, content in data.items():
+            with st.expander(page, expanded=True):
                 st.dataframe(content, use_container_width=True)
-    file_bytes = build_word(data, is_ocr)
+    file_bytes = build_word(pdf_bytes, is_ocr, ocr_data=data if is_ocr else None)
     file_name = f"{base_name}_{timestamp}.docx"
     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 

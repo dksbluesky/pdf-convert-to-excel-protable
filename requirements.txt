@@ -6,3 +6,4 @@ python-docx
 tabulate
 pytesseract
 pdf2image
+pdf2docx
