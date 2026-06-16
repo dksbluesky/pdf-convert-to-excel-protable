@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>PDF 轉換器</title>
+  <title>轉檔神器</title>
 
   <!-- PWA / Home screen -->
   <link rel="manifest" href="/static/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="PDF轉換器">
+  <meta name="apple-mobile-web-app-title" content="轉檔神器">
   <meta name="theme-color" content="#E63946">
 
   <style>
@@ -20,6 +20,7 @@
       --red: #E63946;
       --red-dark: #C1121F;
       --green: #34C759;
+      --blue: #007AFF;
       --bg: #F2F2F7;
       --card: #FFFFFF;
       --text: #1C1C1E;
@@ -47,7 +48,7 @@
     /* ── Header ── */
     header {
       text-align: center;
-      padding: 32px 0 20px;
+      padding: 28px 0 16px;
     }
 
     .logo { font-size: 48px; line-height: 1; }
@@ -63,6 +64,36 @@
       font-size: 14px;
       color: var(--text-3);
       margin-top: 4px;
+    }
+
+    /* ── Mode switcher ── */
+    .mode-switch {
+      display: flex;
+      background: #E5E5EA;
+      border-radius: 11px;
+      padding: 3px;
+      margin-bottom: 14px;
+    }
+
+    .mode-btn {
+      flex: 1;
+      padding: 9px 12px;
+      border: none;
+      border-radius: 8px;
+      background: transparent;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-3);
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+
+    .mode-btn.active {
+      background: white;
+      color: var(--text);
+      box-shadow: 0 1px 4px rgba(0,0,0,.14);
+      font-weight: 600;
     }
 
     /* ── Card ── */
@@ -111,6 +142,20 @@
 
     #fileInput { display: none; }
 
+    /* ── AI info banner ── */
+    #aiInfo {
+      display: none;
+      background: #EBF2FF;
+      border-radius: var(--radius-card);
+      padding: 14px 18px;
+      margin-bottom: 12px;
+    }
+
+    #aiInfo.show { display: block; }
+
+    .ai-title { font-size: 15px; font-weight: 700; color: var(--blue); }
+    .ai-sub   { font-size: 13px; color: var(--text-3); margin-top: 4px; line-height: 1.5; }
+
     /* ── Badge ── */
     #badge {
       display: none;
@@ -119,12 +164,11 @@
       margin-bottom: 12px;
     }
 
-    #badge.show { display: block; }
-
-    #badge.excel  { background: #E8F8EC; }
-    #badge.word   { background: #EBF2FF; }
-    #badge.md     { background: #F5F5F5; }
-    #badge.json   { background: #FFF8E1; }
+    #badge.show    { display: block; }
+    #badge.excel   { background: #E8F8EC; }
+    #badge.word    { background: #EBF2FF; }
+    #badge.md      { background: #F5F5F5; }
+    #badge.json    { background: #FFF8E1; }
     #badge.scanned { background: #FFF0F0; }
 
     .badge-title  { font-size: 20px; font-weight: 700; }
@@ -192,7 +236,6 @@
 
     #wordOpts { display: none; }
     #wordOpts.show { display: block; }
-    #ocrRow { border-top: 1px solid var(--bg); }
 
     /* ── Legend ── */
     .legend {
@@ -216,7 +259,7 @@
       font-size: 17px;
       font-weight: 600;
       cursor: pointer;
-      transition: background .15s, opacity .15s;
+      transition: background .15s;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -258,29 +301,51 @@
 
   <header>
     <div class="logo">📄</div>
-    <h1>PDF 轉換器</h1>
-    <p>上傳後自動偵測類型，選格式，一鍵下載</p>
+    <h1>轉檔神器</h1>
+    <p>PDF、圖片一鍵轉換</p>
   </header>
 
-  <!-- Upload -->
+  <!-- Mode switcher (only shown when Gemini is available) -->
+  {% if gemini_available %}
+  <div class="mode-switch">
+    <button class="mode-btn active" id="modeGeneral" onclick="switchMode('general')">
+      📋 一般模式 <span style="font-size:11px;opacity:.7;">PDF → 多格式</span>
+    </button>
+    <button class="mode-btn" id="modeAi" onclick="switchMode('ai')">
+      ⚡ AI 模式 <span style="font-size:11px;opacity:.7;">圖片/PDF → Excel</span>
+    </button>
+  </div>
+  {% endif %}
+
+  <!-- Upload (shared) -->
   <div class="card" style="padding: 0;">
-    <div class="upload-zone" id="uploadZone" role="button" aria-label="上傳 PDF">
+    <div class="upload-zone" id="uploadZone" role="button">
       <div class="upload-icon" id="uploadIcon">📂</div>
-      <div class="upload-main">點此上傳 PDF</div>
-      <div class="upload-sub">或拖曳至此 · 最大 50 MB</div>
+      <div class="upload-main" id="uploadMain">點此上傳 PDF</div>
+      <div class="upload-sub" id="uploadSub">或拖曳至此 · 最大 50 MB</div>
       <div class="upload-name" id="uploadName"></div>
     </div>
     <input type="file" id="fileInput" accept=".pdf">
   </div>
 
-  <!-- Badge -->
+  <!-- AI info banner (AI mode only) -->
+  <div id="aiInfo">
+    <div class="ai-title">⚡ Gemini 2.5 Flash</div>
+    <div class="ai-sub">
+      支援 PDF、JPG、PNG（最大 20 MB）<br>
+      適合報價單、發票、手寫表格等圖片化文件<br>
+      輸出格式：Excel
+    </div>
+  </div>
+
+  <!-- Badge (general mode only) -->
   <div id="badge">
     <div class="badge-title" id="badgeTitle"></div>
     <div class="badge-reason" id="badgeReason"></div>
   </div>
 
-  <!-- Format -->
-  <div class="card">
+  <!-- Format + toggles (general mode only) -->
+  <div class="card" id="fmtCard">
     <div class="card-label">輸出格式</div>
     <div class="fmt-grid">
       <button class="fmt-btn selected" data-fmt="excel">📊 Excel</button>
@@ -289,7 +354,6 @@
       <button class="fmt-btn" data-fmt="json">🗂 JSON</button>
     </div>
 
-    <!-- Word options -->
     <div id="wordOpts">
       <div class="toggle-row">
         <div class="toggle-info">
@@ -303,9 +367,8 @@
       </div>
     </div>
 
-    <!-- OCR toggle -->
     {% if ocr_available %}
-    <div class="toggle-row" id="ocrRow">
+    <div class="toggle-row">
       <div class="toggle-info">
         <div class="tl">🔍 OCR 模式</div>
         <div class="th">掃描版 PDF 請開啟</div>
@@ -318,7 +381,7 @@
     {% endif %}
   </div>
 
-  <!-- Legend (visible before upload) -->
+  <!-- Legend (general mode, before upload) -->
   <div class="card" id="legend">
     <div class="card-label">自動偵測說明</div>
     <div class="legend">
@@ -336,54 +399,104 @@
 
   <div id="status"></div>
 
-</div><!-- /container -->
+</div>
 
 <script>
 const FMT_LABEL = { excel:'📊 Excel', word:'📝 Word', markdown:'📄 Markdown', json:'🗂 JSON' };
-const FMT_BADGE_CLS = { excel:'excel', word:'word', markdown:'md', json:'json', scanned:'scanned' };
 
+let currentMode = 'general';
 let selFile = null;
 let selFmt  = 'excel';
 
-const zone      = document.getElementById('uploadZone');
-const fileInput = document.getElementById('fileInput');
-const uploadIcon= document.getElementById('uploadIcon');
-const uploadName= document.getElementById('uploadName');
-const badge     = document.getElementById('badge');
-const badgeTitle= document.getElementById('badgeTitle');
-const badgeRsn  = document.getElementById('badgeReason');
-const legend    = document.getElementById('legend');
-const wordOpts  = document.getElementById('wordOpts');
-const convertBtn= document.getElementById('convertBtn');
-const btnLabel  = document.getElementById('btnLabel');
-const status    = document.getElementById('status');
+const zone       = document.getElementById('uploadZone');
+const fileInput  = document.getElementById('fileInput');
+const uploadIcon = document.getElementById('uploadIcon');
+const uploadMain = document.getElementById('uploadMain');
+const uploadSub  = document.getElementById('uploadSub');
+const uploadName = document.getElementById('uploadName');
+const aiInfo     = document.getElementById('aiInfo');
+const badge      = document.getElementById('badge');
+const badgeTitle = document.getElementById('badgeTitle');
+const badgeRsn   = document.getElementById('badgeReason');
+const fmtCard    = document.getElementById('fmtCard');
+const legend     = document.getElementById('legend');
+const wordOpts   = document.getElementById('wordOpts');
+const convertBtn = document.getElementById('convertBtn');
+const btnLabel   = document.getElementById('btnLabel');
+const status     = document.getElementById('status');
 
-// ── Upload interactions ──────────────────────────────
+// ── Mode switch ─────────────────────────────────────
+function switchMode(mode) {
+  currentMode = mode;
+  resetUpload();
+
+  const isAi = mode === 'ai';
+
+  document.getElementById('modeGeneral').classList.toggle('active', !isAi);
+  document.getElementById('modeAi').classList.toggle('active', isAi);
+
+  // Upload zone labels
+  uploadMain.textContent = isAi ? '點此上傳 PDF、JPG 或 PNG' : '點此上傳 PDF';
+  uploadSub.textContent  = isAi ? '或拖曳至此 · 最大 20 MB' : '或拖曳至此 · 最大 50 MB';
+  fileInput.setAttribute('accept', isAi ? '.pdf,.jpg,.jpeg,.png' : '.pdf');
+
+  // Show/hide sections
+  aiInfo.classList.toggle('show', isAi);
+  fmtCard.style.display  = isAi ? 'none' : '';
+  legend.style.display   = isAi ? 'none' : '';
+  badge.className        = '';   // hide badge
+
+  updateBtn();
+}
+
+function resetUpload() {
+  selFile = null;
+  fileInput.value = '';
+  zone.classList.remove('ready', 'drag');
+  uploadIcon.textContent = '📂';
+  uploadName.textContent = '';
+  badge.className = '';
+  setStatus('');
+}
+
+// ── Upload ───────────────────────────────────────────
 zone.addEventListener('click', () => fileInput.click());
 
 zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
-zone.addEventListener('dragleave', ()=> zone.classList.remove('drag'));
+zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
 zone.addEventListener('drop', e => {
   e.preventDefault();
   zone.classList.remove('drag');
   const f = e.dataTransfer.files[0];
-  if (f && f.name.endsWith('.pdf')) onFile(f);
-  else setStatus('⚠️ 請上傳 PDF 檔案', 'err');
+  if (!f) return;
+  if (isValidFile(f)) onFile(f);
+  else setStatus(currentMode === 'ai' ? '⚠️ 請上傳 PDF、JPG 或 PNG' : '⚠️ 請上傳 PDF 檔案', 'err');
 });
 
 fileInput.addEventListener('change', () => fileInput.files[0] && onFile(fileInput.files[0]));
+
+function isValidFile(f) {
+  const name = f.name.toLowerCase();
+  if (currentMode === 'ai') return /\.(pdf|jpg|jpeg|png)$/.test(name);
+  return name.endsWith('.pdf');
+}
 
 function onFile(f) {
   selFile = f;
   zone.classList.add('ready');
   uploadIcon.textContent = '✅';
   uploadName.textContent = f.name;
-  badge.className = '';
-  badge.classList.remove('show');
-  legend.style.display = 'none';
+  legend.style.display   = 'none';
+  badge.className        = '';
   setStatus('');
-  setBtnLoading('分析中...');
 
+  if (currentMode === 'ai') {
+    updateBtn();
+    return;
+  }
+
+  // General mode: auto-analyse
+  setBtnLoading('分析中...');
   const fd = new FormData();
   fd.append('pdf', f);
 
@@ -393,51 +506,44 @@ function onFile(f) {
       badgeTitle.textContent = rec.badge;
       badgeRsn.textContent   = rec.reason;
       const cls = rec.use_ocr ? 'scanned'
-                : rec.format === 'excel' ? 'excel'
-                : rec.format === 'word'  ? 'word'
+                : rec.format === 'excel'    ? 'excel'
+                : rec.format === 'word'     ? 'word'
                 : rec.format === 'markdown' ? 'md' : 'json';
       badge.className = 'show ' + cls;
-
       pickFmt(rec.format);
-
       const ocrCb = document.getElementById('ocrToggle');
       if (ocrCb && rec.use_ocr) ocrCb.checked = true;
-
       setBtnReady();
     })
-    .catch(() => {
-      badge.classList.remove('show');
-      setBtnReady();
-    });
+    .catch(() => { badge.className = ''; setBtnReady(); });
 }
 
 // ── Format ────────────────────────────────────────────
-document.querySelectorAll('.fmt-btn').forEach(b => {
-  b.addEventListener('click', () => pickFmt(b.dataset.fmt));
-});
+document.querySelectorAll('.fmt-btn').forEach(b =>
+  b.addEventListener('click', () => pickFmt(b.dataset.fmt)));
 
 function pickFmt(fmt) {
   selFmt = fmt;
   document.querySelectorAll('.fmt-btn').forEach(b =>
     b.classList.toggle('selected', b.dataset.fmt === fmt));
   wordOpts.classList.toggle('show', fmt === 'word');
-  if (selFile && !convertBtn.disabled) {
-    btnLabel.textContent = '轉換並下載 ' + FMT_LABEL[fmt];
-  }
+  if (selFile && !convertBtn.disabled) updateBtn();
 }
 
 // ── Convert ───────────────────────────────────────────
 convertBtn.addEventListener('click', () => {
   if (!selFile) return;
+  currentMode === 'ai' ? doAiConvert() : doGeneralConvert();
+});
 
+function doGeneralConvert() {
   setBtnLoading('轉換中，請稍候...');
   setStatus('');
 
   const fd = new FormData();
   fd.append('pdf', selFile);
   fd.append('format', selFmt);
-  fd.append('filename', selFile.name.replace(/\.pdf$/i, ''));
-
+  fd.append('filename', selFile.name.replace(/\.[^.]+$/, ''));
   const ocrCb = document.getElementById('ocrToggle');
   fd.append('ocr', ocrCb && ocrCb.checked ? 'true' : 'false');
   fd.append('word_editable', document.getElementById('wordEditable').checked ? 'true' : 'false');
@@ -445,19 +551,9 @@ convertBtn.addEventListener('click', () => {
   fetch('/convert', { method: 'POST', body: fd })
     .then(res => {
       if (!res.ok) return res.json().then(e => { throw new Error(e.error || 'error'); });
-      const cd = res.headers.get('Content-Disposition') || '';
-      const m  = cd.match(/filename[^;=\n]*=(['"]?)([^\n"']+)\1/);
-      const dl = m ? m[2] : ('converted.' + selFmt);
-      return res.blob().then(b => ({ b, dl }));
+      return extractDownload(res, 'converted.' + selFmt);
     })
-    .then(({ b, dl }) => {
-      const url = URL.createObjectURL(b);
-      const a = Object.assign(document.createElement('a'), { href: url, download: dl });
-      a.click();
-      URL.revokeObjectURL(url);
-      setBtnReady();
-      setStatus('✅ 下載完成！', 'ok');
-    })
+    .then(({ blob, name }) => triggerDownload(blob, name))
     .catch(err => {
       setBtnReady();
       if (err.message === 'no_data')
@@ -465,18 +561,63 @@ convertBtn.addEventListener('click', () => {
       else
         setStatus('❌ 轉換失敗：' + err.message, 'err');
     });
-});
+}
+
+function doAiConvert() {
+  setBtnLoading('AI 處理中，請稍候...');
+  setStatus('');
+
+  const fd = new FormData();
+  fd.append('file', selFile);
+
+  fetch('/convert-ai', { method: 'POST', body: fd })
+    .then(res => {
+      if (!res.ok) return res.json().then(e => { throw new Error(e.error || 'error'); });
+      return extractDownload(res, 'converted.xlsx');
+    })
+    .then(({ blob, name }) => triggerDownload(blob, name))
+    .catch(err => {
+      setBtnReady();
+      if (err.message === '429')
+        setStatus('⏳ 配額已滿（429），請稍後一分鐘再試。', 'err');
+      else if (err.message === 'file_too_large')
+        setStatus('⚠️ 檔案超過 20 MB，AI 模式無法處理。', 'err');
+      else if (err.message === 'no_data')
+        setStatus('⚠️ AI 未能辨識出表格結構，請確認圖片品質。', 'err');
+      else
+        setStatus('❌ 錯誤：' + err.message, 'err');
+    });
+}
+
+function extractDownload(res, fallbackName) {
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m  = cd.match(/filename[^;=\n]*=(['"]?)([^\n"']+)\1/);
+  const name = m ? m[2] : fallbackName;
+  return res.blob().then(blob => ({ blob, name }));
+}
+
+function triggerDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  Object.assign(document.createElement('a'), { href: url, download: name }).click();
+  URL.revokeObjectURL(url);
+  setBtnReady();
+  setStatus('✅ 下載完成！', 'ok');
+}
 
 // ── Helpers ────────────────────────────────────────────
+function updateBtn() {
+  convertBtn.disabled = !selFile;
+  if (!selFile)        btnLabel.textContent = currentMode === 'ai' ? '請先上傳檔案' : '請先上傳 PDF';
+  else if (currentMode === 'ai') btnLabel.textContent = 'AI 轉換並下載 Excel ⚡';
+  else                 btnLabel.textContent = '轉換並下載 ' + FMT_LABEL[selFmt];
+}
+
 function setBtnLoading(txt) {
   convertBtn.disabled = true;
   btnLabel.innerHTML  = '<span class="spin"></span> ' + txt;
 }
 
-function setBtnReady() {
-  convertBtn.disabled = !selFile;
-  btnLabel.textContent = selFile ? ('轉換並下載 ' + FMT_LABEL[selFmt]) : '請先上傳 PDF';
-}
+function setBtnReady() { updateBtn(); }
 
 function setStatus(msg, cls) {
   status.textContent = msg;

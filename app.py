@@ -25,6 +25,17 @@ try:
 except ImportError:
     PDF2DOCX_AVAILABLE = False
 
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_AVAILABLE = bool(GEMINI_API_KEY)
+if GEMINI_AVAILABLE:
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+    except ImportError:
+        GEMINI_AVAILABLE = False
+
+GEMINI_MAX_BYTES = 20 * 1024 * 1024  # 20 MB inline limit
+
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 
@@ -215,11 +226,13 @@ def build_json(data: dict, is_ocr: bool) -> str:
 
 
 # ──────────────────────────────────────────────
-# Routes
+# Routes — general mode
 # ──────────────────────────────────────────────
 @app.route("/")
 def index():
-    return render_template("index.html", ocr_available=OCR_AVAILABLE)
+    return render_template("index.html",
+                           ocr_available=OCR_AVAILABLE,
+                           gemini_available=GEMINI_AVAILABLE)
 
 
 @app.route("/analyze", methods=["POST"])
@@ -283,6 +296,87 @@ def convert_route():
 
     return send_file(BytesIO(file_bytes), mimetype=mime,
                      as_attachment=True, download_name=filename)
+
+
+# ──────────────────────────────────────────────
+# Routes — AI mode (Gemini)
+# ──────────────────────────────────────────────
+@app.route("/convert-ai", methods=["POST"])
+def convert_ai_route():
+    if not GEMINI_AVAILABLE:
+        return jsonify({"error": "AI 模式未啟用（缺少 GEMINI_API_KEY）"}), 503
+
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "No file"}), 400
+
+    file_bytes = f.read()
+    if len(file_bytes) > GEMINI_MAX_BYTES:
+        return jsonify({"error": "file_too_large"}), 413
+
+    fname = f.filename.lower()
+    if fname.endswith(".pdf"):
+        mime_type = "application/pdf"
+    elif fname.endswith((".jpg", ".jpeg")):
+        mime_type = "image/jpeg"
+    elif fname.endswith(".png"):
+        mime_type = "image/png"
+    else:
+        return jsonify({"error": "不支援的格式，請上傳 PDF、JPG 或 PNG"}), 400
+
+    base_name = f.filename.rsplit(".", 1)[0]
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = """你是一個專業的資料輸入員。請將這份圖片或 PDF 中的表格轉換為純文字資料。
+
+【嚴格規則】
+1. 每一欄之間，請使用 "###" 作為分隔符號。
+2. 每一列資料換一行。
+3. 第一行必須是表頭。
+4. 不要輸出任何 Markdown 標記，只要純文字。
+5. 金額請保留千分位符號，不要隨意移除。
+6. 若遇到跨頁，請自動合併。
+7. 底部若有付款條件、稅金等資訊，請整理在表格最下方。"""
+
+        response = model.generate_content([
+            {"mime_type": mime_type, "data": file_bytes},
+            prompt
+        ])
+
+        raw = response.text.replace("```csv", "").replace("```", "").strip()
+        lines = [ln for ln in raw.split("\n") if ln.strip()]
+
+        if not lines:
+            return jsonify({"error": "no_data"}), 422
+
+        headers = [h.strip() for h in lines[0].split("###")]
+        rows = []
+        for line in lines[1:]:
+            row = [c.strip() for c in line.split("###")]
+            if len(row) < len(headers):
+                row += [""] * (len(headers) - len(row))
+            elif len(row) > len(headers):
+                row = row[:len(headers)]
+            rows.append(row)
+
+        if not rows:
+            return jsonify({"error": "no_data"}), 422
+
+        df = pd.DataFrame(rows, columns=headers)
+        excel_bytes = build_excel({"表格": df})
+        filename = f"{base_name}_{ts}.xlsx"
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        return send_file(BytesIO(excel_bytes), mimetype=mime,
+                         as_attachment=True, download_name=filename)
+
+    except Exception as e:
+        err = str(e)
+        if "429" in err:
+            return jsonify({"error": "429"}), 429
+        return jsonify({"error": err[:300]}), 500
 
 
 if __name__ == "__main__":
