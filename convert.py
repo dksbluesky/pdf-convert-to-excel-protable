@@ -4,7 +4,6 @@ import pandas as pd
 import json
 from io import BytesIO
 
-# OCR support — needs Tesseract + poppler installed (or packages.txt on Streamlit Cloud)
 try:
     from pdf2image import convert_from_bytes
     import pytesseract
@@ -18,54 +17,76 @@ try:
 except ImportError:
     DOCX_AVAILABLE = False
 
-# ──────────────────────────────────────────────
-# Page config
-# ──────────────────────────────────────────────
-st.set_page_config(page_title="萬用 PDF 轉換器", page_icon="📑", layout="wide")
-st.title("📑 萬用 PDF 轉換器")
-st.markdown("上傳 PDF，選擇格式，預覽後下載。支援文字型與掃描版 PDF（OCR）。")
+FORMATS = ["Excel (.xlsx)", "Word (.docx)", "Markdown (.md)", "JSON (.json)"]
+
+st.set_page_config(page_title="PDF 轉換器", page_icon="📄", layout="wide")
+
+# Hide Streamlit branding
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📄 PDF 轉換器")
+st.caption("上傳 PDF，自動偵測最佳格式並立即轉換。支援文字型與掃描版（OCR）。")
 
 # ──────────────────────────────────────────────
-# Sidebar options
+# Analysis (cached — runs once per file)
 # ──────────────────────────────────────────────
-with st.sidebar:
-    st.header("⚙️ 設定")
+@st.cache_data(show_spinner=False)
+def analyze_pdf(pdf_bytes: bytes) -> dict:
+    """Sample up to 5 pages to recommend the best output format."""
+    table_pages, text_pages, total_pages = 0, 0, 0
+    try:
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            total_pages = len(pdf.pages)
+            for page in pdf.pages[:min(5, total_pages)]:
+                if page.extract_tables():
+                    table_pages += 1
+                if (page.extract_text() or "").strip():
+                    text_pages += 1
+    except Exception:
+        pass
 
-    output_format = st.radio(
-        "輸出格式",
-        ["Excel (.xlsx)", "Word (.docx)", "Markdown (.md)", "JSON (.json)"],
-        index=0,
-    )
-
-    st.divider()
-
-    use_ocr = False
-    if OCR_AVAILABLE:
-        use_ocr = st.checkbox("🔍 OCR 模式（掃描版 PDF）", value=False)
-        if use_ocr:
-            st.info(
-                "OCR 模式會將每頁轉成影像再辨識文字。"
-                "表格結構可能不完整，但至少能取得文字內容。"
-            )
+    if text_pages == 0 and table_pages == 0:
+        return {
+            "format": "Word (.docx)",
+            "badge": "🔍 掃描版 PDF",
+            "reason": "未偵測到可擷取的文字，建議啟用 OCR 再轉為 Word。",
+            "use_ocr": True,
+        }
+    elif table_pages >= text_pages * 0.6:
+        return {
+            "format": "Excel (.xlsx)",
+            "badge": "📊 表格型 PDF",
+            "reason": f"前 {min(5,total_pages)} 頁中有 {table_pages} 頁含表格，最適合匯出為 Excel。",
+            "use_ocr": False,
+        }
+    elif table_pages > 0:
+        return {
+            "format": "Word (.docx)",
+            "badge": "📝 混合型 PDF",
+            "reason": f"文字與表格混合（{table_pages} 頁有表格），建議轉為 Word 保留排版。",
+            "use_ocr": False,
+        }
     else:
-        st.warning(
-            "**OCR 功能未啟用**\n\n"
-            "需要系統安裝：\n"
-            "- Tesseract OCR\n"
-            "- poppler\n\n"
-            "並執行：\n"
-            "```\npip install pytesseract pdf2image\n```"
-        )
+        return {
+            "format": "Markdown (.md)",
+            "badge": "📄 純文字 PDF",
+            "reason": "純文字內容，Markdown 最輕量且易讀。",
+            "use_ocr": False,
+        }
+
 
 # ──────────────────────────────────────────────
-# Extraction helpers
+# Extraction (cached — re-runs only when file or mode changes)
 # ──────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
 def extract_tables(pdf_bytes: bytes) -> dict:
-    """Extract tables from a text-based PDF. Returns {page_label: DataFrame}."""
     result = {}
     with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
-        total = len(pdf.pages)
-        bar = st.progress(0, text="掃描頁面中...")
         for i, page in enumerate(pdf.pages):
             tables = page.extract_tables(table_settings={
                 "vertical_strategy": "lines",
@@ -81,31 +102,26 @@ def extract_tables(pdf_bytes: bytes) -> dict:
                         df = pd.DataFrame(cleaned)
                     dfs.append(df.astype(str).replace("None", ""))
                 if dfs:
-                    result[f"Page {i + 1}"] = pd.concat(dfs, ignore_index=True)
-            bar.progress((i + 1) / total, text=f"處理第 {i + 1} / {total} 頁...")
-        bar.empty()
+                    result[f"Page {i+1}"] = pd.concat(dfs, ignore_index=True)
     return result
 
 
+@st.cache_data(show_spinner=False)
 def extract_ocr(pdf_bytes: bytes) -> dict:
-    """Convert each PDF page to image and OCR it. Returns {page_label: text}."""
     images = convert_from_bytes(pdf_bytes, dpi=300)
     result = {}
-    bar = st.progress(0, text="OCR 辨識中...")
     for i, img in enumerate(images):
-        # Try Traditional Chinese + English; falls back gracefully if lang pack missing
         try:
             text = pytesseract.image_to_string(img, lang="chi_tra+eng")
         except pytesseract.TesseractError:
             text = pytesseract.image_to_string(img)
         if text.strip():
-            result[f"Page {i + 1}"] = text.strip()
-        bar.progress((i + 1) / len(images), text=f"OCR 第 {i + 1} / {len(images)} 頁...")
-    bar.empty()
+            result[f"Page {i+1}"] = text.strip()
     return result
 
+
 # ──────────────────────────────────────────────
-# Build output helpers
+# Build output files
 # ──────────────────────────────────────────────
 def build_excel(data: dict) -> bytes:
     out = BytesIO()
@@ -141,20 +157,15 @@ def build_markdown(data: dict, is_ocr: bool) -> str:
     parts = ["# PDF 轉換結果\n"]
     for page, content in data.items():
         parts.append(f"\n## {page}\n")
-        if is_ocr:
-            parts.append(content)
-        else:
-            parts.append(content.to_markdown(index=False))
+        parts.append(content if is_ocr else content.to_markdown(index=False))
         parts.append("\n")
     return "\n".join(parts)
 
 
 def build_json(data: dict, is_ocr: bool) -> str:
-    if is_ocr:
-        payload = data
-    else:
-        payload = {page: df.to_dict(orient="records") for page, df in data.items()}
+    payload = data if is_ocr else {p: df.to_dict(orient="records") for p, df in data.items()}
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
 
 # ──────────────────────────────────────────────
 # Main UI
@@ -166,10 +177,34 @@ if uploaded:
     base_name = uploaded.name.rsplit(".", 1)[0]
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
 
-    st.divider()
+    # Analyze first (cached, fast)
+    with st.spinner("分析 PDF 結構中..."):
+        rec = analyze_pdf(pdf_bytes)
 
-    with st.spinner("處理中，請稍候..."):
-        if use_ocr:
+    rec_index = FORMATS.index(rec["format"])
+
+    # Sidebar — show recommendation + allow override
+    with st.sidebar:
+        st.header("⚙️ 設定")
+        st.success(f"**{rec['badge']}**\n\n{rec['reason']}")
+        output_format = st.radio("輸出格式", FORMATS, index=rec_index)
+
+        st.divider()
+        use_ocr = rec.get("use_ocr", False)
+        if OCR_AVAILABLE:
+            use_ocr = st.checkbox(
+                "🔍 OCR 模式（掃描版 PDF）",
+                value=rec.get("use_ocr", False),
+                help="將每頁轉成影像再辨識文字。表格結構可能不完整。"
+            )
+        else:
+            if rec.get("use_ocr"):
+                st.warning("⚠️ 偵測到掃描版，但 OCR 套件未安裝。")
+
+    # Extract (cached)
+    st.divider()
+    with st.spinner("轉換中，請稍候..."):
+        if use_ocr and OCR_AVAILABLE:
             data = extract_ocr(pdf_bytes)
             is_ocr = True
         else:
@@ -178,17 +213,14 @@ if uploaded:
 
     if not data:
         if not use_ocr:
-            st.warning(
-                "⚠️ 找不到任何表格結構。\n\n"
-                "若為掃描版 PDF，請在左側勾選 **OCR 模式** 再重試。"
-            )
+            st.warning("⚠️ 找不到表格結構。若為掃描版 PDF，請在左側勾選 **OCR 模式** 再試。")
         else:
-            st.warning("⚠️ OCR 未能辨識出任何文字，請確認 PDF 影像品質。")
+            st.warning("⚠️ OCR 未能辨識出文字，請確認 PDF 影像品質。")
         st.stop()
 
     st.success(f"✅ 成功處理 {len(data)} 頁")
 
-    # ── Build output & preview ─────────────────
+    # Preview
     fmt = output_format
     st.subheader("👁️ 預覽")
 
@@ -224,10 +256,10 @@ if uploaded:
         file_name = f"{base_name}_{timestamp}.json"
         mime = "application/json"
 
-    # ── Download ───────────────────────────────
+    # Download
     st.divider()
     st.download_button(
-        label=f"📥 確認並下載 {fmt}",
+        label=f"📥 下載 {fmt}",
         data=file_bytes,
         file_name=file_name,
         mime=mime,
@@ -236,4 +268,8 @@ if uploaded:
     )
 
 else:
+    with st.sidebar:
+        st.header("⚙️ 設定")
+        st.info("上傳 PDF 後將自動偵測最佳格式。")
+        st.radio("輸出格式", FORMATS, index=0, disabled=True)
     st.info("👆 請上傳 PDF 開始轉換")
