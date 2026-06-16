@@ -250,51 +250,48 @@ def build_json(data: dict, is_ocr: bool) -> str:
 # ──────────────────────────────────────────────
 uploaded = st.file_uploader("📂 上傳 PDF", type=["pdf"])
 
-# Analyze if file already uploaded — determines default format selection
-if uploaded:
-    pdf_bytes = uploaded.read()
-    base_name = uploaded.name.rsplit(".", 1)[0]
-    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    with st.spinner("分析 PDF 結構中..."):
-        rec = analyze_pdf(pdf_bytes)
-    st.info(f"{rec['badge']}　　{rec['reason']}")
-    rec_index = FORMATS.index(rec["format"])
-    ocr_default = rec.get("use_ocr", False)
-else:
-    pdf_bytes = None
-    rec = None
-    rec_index = 0
-    ocr_default = False
-
-# ── Format + OCR options — ALWAYS visible ────
-st.divider()
-col_fmt, col_ocr = st.columns([4, 1])
-with col_fmt:
-    output_format = st.radio("輸出格式", FORMATS, index=rec_index, horizontal=True)
-with col_ocr:
-    if OCR_AVAILABLE:
-        use_ocr = st.checkbox(
-            "🔍 OCR 模式",
-            value=ocr_default,
-            help="掃描版 PDF 請勾選，將每頁影像化後辨識文字。"
-        )
-    else:
-        use_ocr = False
-        if rec and rec.get("use_ocr"):
-            st.warning("偵測到掃描版，但 OCR 未安裝。")
-
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ 設定")
-    if rec:
-        st.success(f"**{rec['badge']}**\n\n{rec['reason']}")
-    else:
-        st.info("上傳 PDF 後將自動偵測最佳格式。")
-
-# ── Process only when file is uploaded ───────
 if not uploaded:
+    with st.sidebar:
+        st.header("⚙️ 設定")
+        st.info("上傳 PDF 後將自動偵測最佳格式。")
+    st.divider()
+    st.radio("輸出格式", FORMATS, index=0, horizontal=True, disabled=True)
     st.stop()
 
+# ── File uploaded ─────────────────────────────
+pdf_bytes = uploaded.read()
+base_name = uploaded.name.rsplit(".", 1)[0]
+timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+
+with st.spinner("分析中..."):
+    rec = analyze_pdf(pdf_bytes)
+
+# Badge — large and prominent
+st.markdown(f"## {rec['badge']}")
+st.caption(rec['reason'])
+
+st.divider()
+
+# Format + OCR — always visible
+col_fmt, col_ocr = st.columns([4, 1])
+with col_fmt:
+    output_format = st.radio("輸出格式", FORMATS,
+                             index=FORMATS.index(rec["format"]), horizontal=True)
+with col_ocr:
+    if OCR_AVAILABLE:
+        use_ocr = st.checkbox("🔍 OCR 模式", value=rec.get("use_ocr", False),
+                              help="掃描版 PDF 請勾選，將每頁影像化後辨識文字。")
+    else:
+        use_ocr = False
+        if rec.get("use_ocr"):
+            st.warning("偵測到掃描版，但 OCR 未安裝。")
+
+# Sidebar mirrors badge
+with st.sidebar:
+    st.header("⚙️ 設定")
+    st.success(f"**{rec['badge']}**\n\n{rec['reason']}")
+
+# ── Convert ───────────────────────────────────
 st.divider()
 with st.spinner("轉換中，請稍候..."):
     if use_ocr and OCR_AVAILABLE:
@@ -305,59 +302,38 @@ with st.spinner("轉換中，請稍候..."):
         is_ocr = False
 
 if not data:
-    if not use_ocr:
-        st.warning("⚠️ 找不到表格結構。若為掃描版 PDF，請勾選上方 **OCR 模式** 再試。")
-    else:
-        st.warning("⚠️ OCR 未能辨識出文字，請確認 PDF 影像品質。")
+    msg = ("⚠️ 找不到表格結構。若為掃描版 PDF，請勾選上方 **OCR 模式** 再試。"
+           if not use_ocr else "⚠️ OCR 未能辨識出文字，請確認 PDF 影像品質。")
+    st.warning(msg)
     st.stop()
 
-st.success(f"✅ 成功處理 {len(data)} 頁")
-
-# ── Preview ───────────────────────────────────
+# ── Build output ──────────────────────────────
 fmt = output_format
-st.subheader("👁️ 預覽")
 
 if fmt == "Excel (.xlsx)":
-    for page, df in data.items():
-        with st.expander(page, expanded=True):
-            st.dataframe(df, use_container_width=True)
     file_bytes = build_excel(data)
     file_name = f"{base_name}_{timestamp}.xlsx"
     mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 elif fmt == "Word (.docx)":
-    if is_ocr:
-        for page, content in data.items():
-            with st.expander(page, expanded=True):
-                st.text(content)
-    elif PDF2DOCX_AVAILABLE:
-        st.info("📝 使用高保真引擎轉換中，版面、字型與表格將盡量還原。預覽不適用，請下載後在 Word 中開啟確認。")
-    else:
-        for page, content in data.items():
-            with st.expander(page, expanded=True):
-                st.dataframe(content, use_container_width=True)
     file_bytes = build_word(pdf_bytes, is_ocr, ocr_data=data if is_ocr else None)
     file_name = f"{base_name}_{timestamp}.docx"
     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 elif fmt == "Markdown (.md)":
     md_text = build_markdown(data, is_ocr)
-    with st.expander("Markdown 預覽", expanded=True):
-        st.markdown(md_text)
     file_bytes = md_text.encode("utf-8")
     file_name = f"{base_name}_{timestamp}.md"
     mime = "text/markdown"
 
 elif fmt == "JSON (.json)":
     json_str = build_json(data, is_ocr)
-    with st.expander("JSON 預覽", expanded=True):
-        st.json(json.loads(json_str))
     file_bytes = json_str.encode("utf-8")
     file_name = f"{base_name}_{timestamp}.json"
     mime = "application/json"
 
 # ── Download ──────────────────────────────────
-st.divider()
+st.success(f"✅ 完成！已處理 {len(data)} 頁")
 st.download_button(
     label=f"📥 下載 {fmt}",
     data=file_bytes,
