@@ -483,7 +483,7 @@ def _add_ntd_column(df: pd.DataFrame, rate: float) -> pd.DataFrame:
     if not amount_col or NTD_COL in df.columns:
         return df
     numeric = _to_numeric(df[amount_col])
-    ntd_values = numeric.map(lambda v: round(v * rate) if v is not None else "")
+    ntd_values = numeric.map(lambda v: round(v * rate) if pd.notna(v) else "")
     out = df.copy()
     out.insert(list(df.columns).index(amount_col) + 1, NTD_COL, ntd_values)
     return out
