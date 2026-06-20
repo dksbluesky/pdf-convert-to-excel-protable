@@ -10,6 +10,7 @@ from flask import Flask, render_template, request, jsonify, send_file
 import pdfplumber
 import pandas as pd
 import requests
+import openpyxl
 
 try:
     from pdf2image import convert_from_bytes
@@ -173,6 +174,30 @@ def build_excel(data: dict, notes: dict = None) -> bytes:
     return out.getvalue()
 
 
+_RATE_NOTE_PREFIX = "匯率："
+
+
+def read_excel_sheets(file_bytes: bytes) -> dict:
+    """Read all sheets from an uploaded Excel file, the way build_excel()'s own
+    output needs to be read back during "加入現有 Excel": when a sheet has a
+    currency rate-note in cell A1 (write side: build_excel's startrow=1 shift),
+    the real header row is row 2, not row 1 — reading with the default header=0
+    would treat the note text as a column header and shift every real column
+    name to "Unnamed: N", silently corrupting that sheet's data on merge."""
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+    sheets = {}
+    try:
+        for name in wb.sheetnames:
+            ws = wb[name]
+            a1 = ws.cell(row=1, column=1).value
+            b1 = ws.cell(row=1, column=2).value
+            has_note = isinstance(a1, str) and a1.startswith(_RATE_NOTE_PREFIX) and b1 in (None, "")
+            sheets[name] = pd.read_excel(BytesIO(file_bytes), sheet_name=name, header=1 if has_note else 0)
+    finally:
+        wb.close()
+    return sheets
+
+
 def build_word(pdf_bytes: bytes, is_ocr: bool, ocr_data: dict = None) -> bytes:
     if is_ocr and ocr_data:
         doc = Document()
@@ -305,7 +330,7 @@ def convert_route():
             return jsonify({"error": "no_data"}), 422
         if existing_bytes:
             try:
-                existing_sheets = pd.read_excel(BytesIO(existing_bytes), sheet_name=None)
+                existing_sheets = read_excel_sheets(existing_bytes)
             except Exception:
                 existing_sheets = {}
             used = set(existing_sheets.keys())
@@ -566,9 +591,19 @@ def _rebuild_with_subtotals(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _strip_marker_rows(df: pd.DataFrame) -> pd.DataFrame:
-    if "來源檔案" not in df.columns:
+    """Strips both marker-row conventions: combined sheets tag 小計/總計 rows
+    via the 來源檔案 column; single-file per-file sheets (no 來源檔案 column)
+    have no tag at all — _per_file_subtotal_row puts "小計" directly in the
+    first (item-name) column instead. Missing either check lets a stale
+    subtotal survive a re-merge and get summed again."""
+    if df.empty or len(df.columns) == 0:
         return df
-    mask = ~df["來源檔案"].astype(str).str.startswith(("小計", "總計"))
+    mask = pd.Series(True, index=df.index)
+    if "來源檔案" in df.columns:
+        mask &= ~df["來源檔案"].astype(str).str.startswith(("小計", "總計"))
+    first_col = df.columns[0]
+    if first_col != "來源檔案":
+        mask &= ~df[first_col].astype(str).isin(["小計", "總計"])
     return df[mask].reset_index(drop=True)
 
 
@@ -685,7 +720,7 @@ def convert_ai_route():
     existing_file = request.files.get("existing_excel")
     if existing_file and existing_file.filename:
         try:
-            existing_sheets = pd.read_excel(BytesIO(existing_file.read()), sheet_name=None)
+            existing_sheets = read_excel_sheets(existing_file.read())
             existing_label = existing_file.filename.rsplit(".", 1)[0]
         except Exception:
             existing_sheets = {}
@@ -759,10 +794,10 @@ def convert_ai_route():
 
         if append_target:
             old_df = all_sheets.pop(append_target)
+            old_df = _strip_marker_rows(old_df)
             if "來源檔案" not in old_df.columns:
                 old_df = old_df.copy()
                 old_df.insert(0, "來源檔案", "(原有資料)")
-            old_df = _strip_marker_rows(old_df)
             old_df = _rebuild_with_subtotals(old_df)
             merged = pd.concat([old_df, new_combined], ignore_index=True, sort=False)
             merged = _coalesce_amount_columns(merged)
