@@ -156,9 +156,20 @@ def build_excel(data: dict, notes: dict = None) -> bytes:
             sheet_name = sheet[:31]
             note = (notes or {}).get(sheet)
             startrow = 1 if note else 0
-            df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=startrow)
+            df_out, numeric_cols = _numericize_for_excel(df)
+            df_out.to_excel(writer, sheet_name=sheet_name, index=False, startrow=startrow)
             if note:
                 writer.sheets[sheet_name]["A1"] = note
+            if numeric_cols:
+                ws = writer.sheets[sheet_name]
+                header_row = startrow + 1
+                cols = list(df_out.columns)
+                for col_name in numeric_cols:
+                    col_idx = cols.index(col_name) + 1
+                    for r in range(header_row + 1, header_row + 1 + len(df_out)):
+                        cell = ws.cell(row=r, column=col_idx)
+                        if cell.value not in (None, ""):
+                            cell.number_format = "#,##0"
     return out.getvalue()
 
 
@@ -476,6 +487,39 @@ def _to_numeric(series: pd.Series) -> pd.Series:
         m = re.search(r"-?\d[\d,]*\.?\d*", str(v))
         return float(m.group().replace(",", "")) if m else None
     return series.map(parse)
+
+
+NUMERIC_HEADER_KEYWORDS = AMOUNT_KEYWORDS + [
+    "數量", "数量", "수량", "quantity", "qty",
+    "單價", "单价", "단가", "unit price", "price",
+]
+_NUMERIC_CELL_RE = re.compile(r"^-?[\d,]+\.?\d*$")
+
+
+def _is_numeric_header(name) -> bool:
+    low = str(name).lower()
+    return any(kw.lower() in low for kw in NUMERIC_HEADER_KEYWORDS)
+
+
+def _numericize_for_excel(df: pd.DataFrame):
+    """Quantity/price/amount columns are kept as text strings (e.g. "9,000")
+    so the original thousands-separator formatting is preserved verbatim, but
+    that makes Excel treat them as text — no native AutoSum/status-bar totals.
+    Convert columns that are unambiguously numeric (by header keyword AND every
+    non-blank cell matching a plain number pattern) into real numbers with an
+    Excel thousands-separator number format, so they look the same but sum natively."""
+    out = df.copy()
+    numeric_cols = []
+    for c in out.columns:
+        if c == "來源檔案" or not _is_numeric_header(c):
+            continue
+        vals = out[c].astype(str).str.strip()
+        non_blank = vals[(vals != "") & (vals.str.lower() != "nan")]
+        if non_blank.empty or not non_blank.str.match(_NUMERIC_CELL_RE).all():
+            continue
+        out[c] = _to_numeric(out[c])
+        numeric_cols.append(c)
+    return out, numeric_cols
 
 
 def _add_ntd_column(df: pd.DataFrame, rate: float) -> pd.DataFrame:
