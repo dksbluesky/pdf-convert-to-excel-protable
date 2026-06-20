@@ -420,6 +420,18 @@ def convert_ai_route():
     translate = request.form.get("translate") == "true"
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # ── Optional: merge into an existing Excel file ──
+    existing_sheets = {}
+    existing_label = None
+    existing_file = request.files.get("existing_excel")
+    if existing_file and existing_file.filename:
+        try:
+            existing_sheets = pd.read_excel(BytesIO(existing_file.read()), sheet_name=None)
+            existing_label = existing_file.filename.rsplit(".", 1)[0]
+        except Exception:
+            existing_sheets = {}
+            existing_label = None
+
     jobs = []
     for f in files:
         file_bytes = f.read()
@@ -452,7 +464,7 @@ def convert_ai_route():
     if not results:
         return jsonify({"error": "no_data"}), 422
 
-    used_sheet_names = set()
+    used_sheet_names = set(existing_sheets.keys())
     sheets = {}
     combined_parts = []
     for filename, df in results.items():
@@ -462,9 +474,32 @@ def convert_ai_route():
         tagged.insert(0, "來源檔案", filename)
         combined_parts.append(tagged)
 
-    if len(results) > 1:
-        combined = pd.concat(combined_parts, ignore_index=True, sort=False)
-        all_sheets = {"全部明細": combined, **sheets}
+    new_combined = (pd.concat(combined_parts, ignore_index=True, sort=False)
+                    if len(combined_parts) > 1 else combined_parts[0])
+
+    merge_note = None
+    if existing_sheets:
+        all_sheets = dict(existing_sheets)
+        if "全部明細" in all_sheets:
+            append_target = "全部明細"
+        elif len(existing_sheets) == 1:
+            append_target = next(iter(existing_sheets.keys()))
+        else:
+            append_target = None
+
+        if append_target:
+            old_df = all_sheets.pop(append_target)
+            if "來源檔案" not in old_df.columns:
+                old_df = old_df.copy()
+                old_df.insert(0, "來源檔案", "(原有資料)")
+            all_sheets["全部明細"] = pd.concat([old_df, new_combined], ignore_index=True, sort=False)
+        else:
+            all_sheets["全部明細（新增）"] = new_combined
+            merge_note = "原檔案有多個分頁且找不到「全部明細」，新資料已新增為獨立分頁"
+        all_sheets.update(sheets)
+        filename_out = f"{existing_label}_更新_{ts}.xlsx"
+    elif len(results) > 1:
+        all_sheets = {"全部明細": new_combined, **sheets}
         filename_out = f"批次轉換_{len(results)}筆_{ts}.xlsx"
     else:
         all_sheets = sheets
@@ -481,6 +516,8 @@ def convert_ai_route():
     if failures:
         resp.headers["X-Convert-Warnings"] = ";".join(
             f"{quote(fn)}:{reason}" for fn, reason in failures)
+    if merge_note:
+        resp.headers["X-Merge-Note"] = quote(merge_note)
     return resp
 
 

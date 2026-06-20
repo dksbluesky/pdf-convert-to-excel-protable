@@ -388,7 +388,8 @@
 
     <div class="help-tip">
       💡 簡單判斷：PDF 裡的文字可以選取、複製 → 用<b>一般模式</b>。看起來像照片或掃描出來的 → 用<b>AI 模式</b>。<br><br>
-      🧳 AI 模式可一次選取多張發票/收據，自動合併成一份 Excel（總表＋各檔分頁）。
+      🧳 AI 模式可一次選取多張發票/收據，自動合併成一份 Excel（總表＋各檔分頁）。<br><br>
+      📎 開啟「加入現有 Excel」可將新轉換的資料合併進舊檔案，方便分次累積（例如旅行中每天加入當天的發票）。
     </div>
   </div>
 
@@ -414,6 +415,28 @@
         <input type="checkbox" id="translateToggle" checked>
         <span class="sw-track"></span>
       </label>
+    </div>
+  </div>
+
+  <!-- Append-to-existing-Excel toggle (AI mode) -->
+  <div class="card" id="appendCard" style="display:none;">
+    <div class="toggle-row" style="border-top:none;">
+      <div class="toggle-info">
+        <div class="tl">📎 加入現有 Excel</div>
+        <div class="th">將新資料合併進舊檔案，而非建立新檔</div>
+      </div>
+      <label class="sw">
+        <input type="checkbox" id="appendToggle">
+        <span class="sw-track"></span>
+      </label>
+    </div>
+    <div id="existingPicker" style="display:none; margin-top:10px;">
+      <div class="upload-zone" id="existingZone" style="padding:16px;">
+        <div style="font-size:26px; line-height:1;" id="existingIcon">📊</div>
+        <div style="margin-top:6px; font-size:14px; font-weight:500; color:var(--text-2);">點此選擇現有 Excel 檔案</div>
+        <div class="upload-name" id="existingName"></div>
+      </div>
+      <input type="file" id="existingFileInput" accept=".xlsx" style="display:none;">
     </div>
   </div>
 
@@ -501,6 +524,13 @@ const aiInfo      = document.getElementById('aiInfo');
 const translateCard  = document.getElementById('translateCard');
 const translateLabel = document.getElementById('translateLabel');
 const translateToggle = document.getElementById('translateToggle');
+const appendCard      = document.getElementById('appendCard');
+const appendToggle    = document.getElementById('appendToggle');
+const existingPicker  = document.getElementById('existingPicker');
+const existingZone    = document.getElementById('existingZone');
+const existingFileInput = document.getElementById('existingFileInput');
+const existingName    = document.getElementById('existingName');
+let selExistingExcel = null;
 const badge       = document.getElementById('badge');
 const badgeTitle  = document.getElementById('badgeTitle');
 const badgeRsn    = document.getElementById('badgeReason');
@@ -545,9 +575,38 @@ function switchMode(mode) {
   fmtCard.style.display  = isAi ? 'none' : '';
   legend.style.display   = isAi ? 'none' : '';
   badge.className        = '';   // hide badge
+  appendCard.style.display = isAi ? '' : 'none';
+  if (!isAi) {
+    appendToggle.checked = false;
+    existingPicker.style.display = 'none';
+    selExistingExcel = null;
+    existingName.textContent = '';
+  }
 
   updateBtn();
 }
+
+appendToggle.addEventListener('change', () => {
+  existingPicker.style.display = appendToggle.checked ? '' : 'none';
+  if (!appendToggle.checked) {
+    selExistingExcel = null;
+    existingName.textContent = '';
+    existingFileInput.value = '';
+  }
+});
+
+existingZone.addEventListener('click', () => existingFileInput.click());
+
+existingFileInput.addEventListener('change', () => {
+  const f = existingFileInput.files[0];
+  if (!f) return;
+  if (!f.name.toLowerCase().endsWith('.xlsx')) {
+    setStatus('⚠️ 請選擇 .xlsx 檔案', 'err');
+    return;
+  }
+  selExistingExcel = f;
+  existingName.textContent = f.name;
+});
 
 function resetUpload() {
   selFile = null;
@@ -723,18 +782,26 @@ function doAiConvert() {
   const wantTranslate = translateCard.style.display !== 'none' && translateToggle.checked;
   fd.append('translate', wantTranslate ? 'true' : 'false');
 
+  if (appendToggle.checked && selExistingExcel) {
+    fd.append('existing_excel', selExistingExcel);
+  }
+
   fetch('/convert-ai', { method: 'POST', body: fd })
     .then(res => {
       if (!res.ok) return res.json().then(e => { throw new Error(e.error || 'error'); });
       const successCount = parseInt(res.headers.get('X-Success-Count') || '0', 10);
       const totalCount   = parseInt(res.headers.get('X-Total-Count') || '0', 10);
       const hasWarnings  = !!res.headers.get('X-Convert-Warnings');
+      const mergeNoteHeader = res.headers.get('X-Merge-Note');
+      const mergeNote = mergeNoteHeader ? decodeURIComponent(mergeNoteHeader) : '';
       return extractDownload(res, 'converted.xlsx')
-        .then(d => ({ ...d, successCount, totalCount, hasWarnings }));
+        .then(d => ({ ...d, successCount, totalCount, hasWarnings, mergeNote }));
     })
-    .then(({ blob, name, successCount, totalCount, hasWarnings }) => {
+    .then(({ blob, name, successCount, totalCount, hasWarnings, mergeNote }) => {
       triggerDownload(blob, name);
-      if (hasWarnings) {
+      if (mergeNote) {
+        setStatus(`⚠️ ${mergeNote}`, 'err');
+      } else if (hasWarnings) {
         setStatus(`✅ 完成 ${successCount}/${totalCount} 筆，部分檔案無法辨識已略過`, 'ok');
       }
     })
