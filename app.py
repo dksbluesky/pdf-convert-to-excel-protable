@@ -301,6 +301,47 @@ def convert_route():
 # ──────────────────────────────────────────────
 # Routes — AI mode (Gemini)
 # ──────────────────────────────────────────────
+def _gemini_mime(filename: str):
+    fname = filename.lower()
+    if fname.endswith(".pdf"):
+        return "application/pdf"
+    elif fname.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    elif fname.endswith(".png"):
+        return "image/png"
+    return None
+
+
+@app.route("/detect-language", methods=["POST"])
+def detect_language_route():
+    if not GEMINI_AVAILABLE:
+        return jsonify({"language": "zh"})
+
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "No file"}), 400
+
+    file_bytes = f.read()
+    if len(file_bytes) > GEMINI_MAX_BYTES:
+        return jsonify({"language": "zh"})
+
+    mime_type = _gemini_mime(f.filename)
+    if not mime_type:
+        return jsonify({"language": "zh"})
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = ("請判斷這份文件中表格內容主要使用的語言。"
+                  "只回答一個代碼，不要有其他文字或標點：zh／en／ja／ko／other")
+        response = model.generate_content([{"mime_type": mime_type, "data": file_bytes}, prompt])
+        code = response.text.strip().lower()
+        if code not in ("zh", "en", "ja", "ko", "other"):
+            code = "other"
+        return jsonify({"language": code})
+    except Exception:
+        return jsonify({"language": "zh"})
+
+
 @app.route("/convert-ai", methods=["POST"])
 def convert_ai_route():
     if not GEMINI_AVAILABLE:
@@ -314,22 +355,32 @@ def convert_ai_route():
     if len(file_bytes) > GEMINI_MAX_BYTES:
         return jsonify({"error": "file_too_large"}), 413
 
-    fname = f.filename.lower()
-    if fname.endswith(".pdf"):
-        mime_type = "application/pdf"
-    elif fname.endswith((".jpg", ".jpeg")):
-        mime_type = "image/jpeg"
-    elif fname.endswith(".png"):
-        mime_type = "image/png"
-    else:
+    mime_type = _gemini_mime(f.filename)
+    if not mime_type:
         return jsonify({"error": "不支援的格式，請上傳 PDF、JPG 或 PNG"}), 400
 
+    translate = request.form.get("translate") == "true"
     base_name = f.filename.rsplit(".", 1)[0]
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     try:
         model = genai.GenerativeModel("gemini-2.5-flash")
-        prompt = """你是一個專業的資料輸入員。請將這份圖片或 PDF 中的表格轉換為純文字資料。
+
+        if translate:
+            prompt = """你是一個專業的雙語資料輸入員。請將這份圖片或 PDF 中的表格轉換為純文字資料，並附上中文翻譯。
+
+【嚴格規則】
+1. 每一欄之間，請使用 "###" 作為分隔符號。
+2. 每一列資料換一行，第一行必須是表頭。
+3. 對於文字類欄位（如品名、描述、備註、條款等），請在該欄位右側緊接著新增一欄，欄名為「原欄名_中文」，內容為該欄位翻譯為繁體中文。
+4. 對於純數字、金額、日期、編號欄位，不需要翻譯，也不要新增欄位。
+5. 每一列的欄位數量必須一致。
+6. 不要輸出任何 Markdown 標記，只要純文字。
+7. 金額請保留千分位符號，不要隨意移除。
+8. 若遇到跨頁，請自動合併。
+9. 底部若有付款條件、稅金等資訊，請整理在表格最下方的列，文字部分同樣附上中文翻譯。"""
+        else:
+            prompt = """你是一個專業的資料輸入員。請將這份圖片或 PDF 中的表格轉換為純文字資料。
 
 【嚴格規則】
 1. 每一欄之間，請使用 "###" 作為分隔符號。

@@ -343,6 +343,20 @@
     </div>
   </div>
 
+  <!-- Translate toggle (AI mode, non-Chinese content detected) -->
+  <div class="card" id="translateCard" style="display:none;">
+    <div class="toggle-row" style="border-top:none;">
+      <div class="toggle-info">
+        <div class="tl" id="translateLabel">🌐 偵測到外文內容</div>
+        <div class="th">加上中文翻譯欄位</div>
+      </div>
+      <label class="sw">
+        <input type="checkbox" id="translateToggle" checked>
+        <span class="sw-track"></span>
+      </label>
+    </div>
+  </div>
+
   <!-- Badge (general mode only) -->
   <div id="badge">
     <div class="badge-title" id="badgeTitle"></div>
@@ -408,27 +422,31 @@
 
 <script>
 const FMT_LABEL = { excel:'📊 Excel', word:'📝 Word', markdown:'📄 Markdown', json:'🗂 JSON' };
+const LANG_NAMES = { en: '英文', ja: '日文', ko: '韓文', other: '外文' };
 
 let currentMode = 'general';
 let selFile = null;
 let selFmt  = 'excel';
 
-const zone       = document.getElementById('uploadZone');
-const fileInput  = document.getElementById('fileInput');
-const uploadIcon = document.getElementById('uploadIcon');
-const uploadMain = document.getElementById('uploadMain');
-const uploadSub  = document.getElementById('uploadSub');
-const uploadName = document.getElementById('uploadName');
-const aiInfo     = document.getElementById('aiInfo');
-const badge      = document.getElementById('badge');
-const badgeTitle = document.getElementById('badgeTitle');
-const badgeRsn   = document.getElementById('badgeReason');
-const fmtCard    = document.getElementById('fmtCard');
-const legend     = document.getElementById('legend');
-const wordOpts   = document.getElementById('wordOpts');
-const convertBtn = document.getElementById('convertBtn');
-const btnLabel   = document.getElementById('btnLabel');
-const status     = document.getElementById('status');
+const zone        = document.getElementById('uploadZone');
+const fileInput   = document.getElementById('fileInput');
+const uploadIcon  = document.getElementById('uploadIcon');
+const uploadMain  = document.getElementById('uploadMain');
+const uploadSub   = document.getElementById('uploadSub');
+const uploadName  = document.getElementById('uploadName');
+const aiInfo      = document.getElementById('aiInfo');
+const translateCard  = document.getElementById('translateCard');
+const translateLabel = document.getElementById('translateLabel');
+const translateToggle = document.getElementById('translateToggle');
+const badge       = document.getElementById('badge');
+const badgeTitle  = document.getElementById('badgeTitle');
+const badgeRsn    = document.getElementById('badgeReason');
+const fmtCard     = document.getElementById('fmtCard');
+const legend      = document.getElementById('legend');
+const wordOpts    = document.getElementById('wordOpts');
+const convertBtn  = document.getElementById('convertBtn');
+const btnLabel    = document.getElementById('btnLabel');
+const status      = document.getElementById('status');
 
 // ── Mode switch ─────────────────────────────────────
 function switchMode(mode) {
@@ -461,6 +479,7 @@ function resetUpload() {
   uploadIcon.textContent = '📂';
   uploadName.textContent = '';
   badge.className = '';
+  translateCard.style.display = 'none';
   setStatus('');
 }
 
@@ -493,10 +512,11 @@ function onFile(f) {
   uploadName.textContent = f.name;
   legend.style.display   = 'none';
   badge.className        = '';
+  translateCard.style.display = 'none';
   setStatus('');
 
   if (currentMode === 'ai') {
-    updateBtn();
+    detectLanguage(f);
     return;
   }
 
@@ -568,12 +588,34 @@ function doGeneralConvert() {
     });
 }
 
+function detectLanguage(f) {
+  setBtnLoading('偵測語言中...');
+  const fd = new FormData();
+  fd.append('file', f);
+
+  fetch('/detect-language', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(res => {
+      const lang = res.language;
+      if (lang && lang !== 'zh' && lang !== 'unknown') {
+        translateLabel.textContent = '🌐 偵測到' + (LANG_NAMES[lang] || '外文') + '內容';
+        translateCard.style.display = '';
+      } else {
+        translateCard.style.display = 'none';
+      }
+      updateBtn();
+    })
+    .catch(() => { translateCard.style.display = 'none'; updateBtn(); });
+}
+
 function doAiConvert() {
   setBtnLoading('AI 處理中，請稍候...');
   setStatus('');
 
   const fd = new FormData();
   fd.append('file', selFile);
+  const wantTranslate = translateCard.style.display !== 'none' && translateToggle.checked;
+  fd.append('translate', wantTranslate ? 'true' : 'false');
 
   fetch('/convert-ai', { method: 'POST', body: fd })
     .then(res => {
