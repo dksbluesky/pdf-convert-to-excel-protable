@@ -77,11 +77,11 @@
 
     .mode-btn {
       flex: 1;
-      padding: 8px 6px;
+      padding: 8px 4px;
       border: none;
       border-radius: 8px;
       background: transparent;
-      font-size: 14px;
+      font-size: 12.5px;
       font-weight: 500;
       color: var(--text-3);
       cursor: pointer;
@@ -251,6 +251,31 @@
 
     .legend-item { display: flex; align-items: center; gap: 6px; }
 
+    /* ── Help tab ── */
+    .help-section { margin-bottom: 16px; }
+    .help-section:last-of-type { margin-bottom: 0; }
+    .help-section-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+    .help-list { display: flex; flex-direction: column; gap: 7px; }
+    .help-item {
+      font-size: 13px;
+      color: var(--text-2);
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      line-height: 1.4;
+    }
+    .help-item .ic { flex-shrink: 0; }
+
+    .help-tip {
+      margin-top: 16px;
+      padding: 12px 14px;
+      background: var(--bg);
+      border-radius: var(--radius-inner);
+      font-size: 13px;
+      color: var(--text-2);
+      line-height: 1.5;
+    }
+
     /* ── Convert button ── */
     #convertBtn {
       width: 100%;
@@ -319,11 +344,15 @@
       <span>⚡ AI 模式</span>
       <span style="font-size:11px;opacity:.7;">圖片/PDF → Excel</span>
     </button>
+    <button class="mode-btn" id="modeHelp" onclick="switchMode('help')">
+      <span>📖 使用說明</span>
+      <span style="font-size:11px;opacity:.7;">何時用哪個</span>
+    </button>
   </div>
   {% endif %}
 
   <!-- Upload (shared) -->
-  <div class="card" style="padding: 0;">
+  <div class="card" id="uploadCard" style="padding: 0;">
     <div class="upload-zone" id="uploadZone" role="button">
       <div class="upload-icon" id="uploadIcon">📂</div>
       <div class="upload-main" id="uploadMain">點此上傳 PDF</div>
@@ -331,6 +360,34 @@
       <div class="upload-name" id="uploadName"></div>
     </div>
     <input type="file" id="fileInput" accept=".pdf">
+  </div>
+
+  <!-- Help (usage guide) -->
+  <div class="card" id="helpCard" style="display:none;">
+    <div class="card-label">何時用哪個模式</div>
+
+    <div class="help-section">
+      <div class="help-section-title">⚡ 用 AI 模式</div>
+      <div class="help-list">
+        <div class="help-item"><span class="ic">🌍</span><span>外文發票、報價單，需要中文翻譯</span></div>
+        <div class="help-item"><span class="ic">📷</span><span>紙本文件照片（JPG / PNG）</span></div>
+        <div class="help-item"><span class="ic">🧾</span><span>掃描版 PDF，表格邊框不清楚或無邊框</span></div>
+        <div class="help-item"><span class="ic">✍️</span><span>手寫表單或收據</span></div>
+      </div>
+    </div>
+
+    <div class="help-section">
+      <div class="help-section-title">📋 用一般模式</div>
+      <div class="help-list">
+        <div class="help-item"><span class="ic">📝</span><span>一般數位 PDF（文字可選取、複製）</span></div>
+        <div class="help-item"><span class="ic">📁</span><span>需要輸出 Word、Markdown 或 JSON</span></div>
+        <div class="help-item"><span class="ic">📦</span><span>檔案超過 20 MB（AI 模式上限為 20 MB）</span></div>
+      </div>
+    </div>
+
+    <div class="help-tip">
+      💡 簡單判斷：PDF 裡的文字可以選取、複製 → 用<b>一般模式</b>。看起來像照片或掃描出來的 → 用<b>AI 模式</b>。
+    </div>
   </div>
 
   <!-- AI info banner (AI mode only) -->
@@ -428,6 +485,8 @@ let currentMode = 'general';
 let selFile = null;
 let selFmt  = 'excel';
 
+const uploadCard  = document.getElementById('uploadCard');
+const helpCard    = document.getElementById('helpCard');
 const zone        = document.getElementById('uploadZone');
 const fileInput   = document.getElementById('fileInput');
 const uploadIcon  = document.getElementById('uploadIcon');
@@ -453,10 +512,23 @@ function switchMode(mode) {
   currentMode = mode;
   resetUpload();
 
-  const isAi = mode === 'ai';
+  const isAi   = mode === 'ai';
+  const isHelp = mode === 'help';
 
-  document.getElementById('modeGeneral').classList.toggle('active', !isAi);
+  document.getElementById('modeGeneral').classList.toggle('active', mode === 'general');
   document.getElementById('modeAi').classList.toggle('active', isAi);
+  document.getElementById('modeHelp').classList.toggle('active', isHelp);
+
+  uploadCard.style.display = isHelp ? 'none' : '';
+  helpCard.style.display   = isHelp ? '' : 'none';
+  convertBtn.style.display = isHelp ? 'none' : '';
+
+  if (isHelp) {
+    aiInfo.classList.remove('show');
+    fmtCard.style.display = 'none';
+    legend.style.display  = 'none';
+    return;
+  }
 
   // Upload zone labels
   uploadMain.textContent = isAi ? '點此上傳 PDF、JPG 或 PNG' : '點此上傳 PDF';
