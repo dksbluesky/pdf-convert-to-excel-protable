@@ -389,7 +389,8 @@
     <div class="help-tip">
       💡 簡單判斷：PDF 裡的文字可以選取、複製 → 用<b>一般模式</b>。看起來像照片或掃描出來的 → 用<b>AI 模式</b>。<br><br>
       🧳 AI 模式可一次選取多張發票/收據，自動合併成一份 Excel（總表＋各檔分頁）。<br><br>
-      📎 開啟「加入現有 Excel」可將新轉換的資料合併進舊檔案，方便分次累積（例如旅行中每天加入當天的發票）。一般模式的各格式也都有「加入現有檔案」選項，可累積到同一份 Excel／Word／Markdown／JSON。
+      📎 開啟「加入現有 Excel」可將新轉換的資料合併進舊檔案，方便分次累積（例如旅行中每天加入當天的發票）。一般模式的各格式也都有「加入現有檔案」選項，可累積到同一份 Excel／Word／Markdown／JSON。<br><br>
+      💱 偵測到外文時可開啟「加上台幣金額」，會自動查詢今日匯率並新增 NT$ 欄位（可手動調整匯率）。每張發票會自動加上小計，多張發票時會在總表最下方加上總計。
     </div>
   </div>
 
@@ -415,6 +416,41 @@
         <input type="checkbox" id="translateToggle" checked>
         <span class="sw-track"></span>
       </label>
+    </div>
+  </div>
+
+  <!-- Currency conversion (AI mode, non-Chinese content detected) -->
+  <div class="card" id="currencyCard" style="display:none;">
+    <div class="toggle-row" style="border-top:none;">
+      <div class="toggle-info">
+        <div class="tl">💱 加上台幣金額</div>
+        <div class="th">使用今日匯率換算為 NT$（新增一欄）</div>
+      </div>
+      <label class="sw">
+        <input type="checkbox" id="currencyToggle">
+        <span class="sw-track"></span>
+      </label>
+    </div>
+    <div id="currencyOpts" style="display:none; margin-top:10px;">
+      <div style="display:flex; gap:8px; margin-bottom:8px;">
+        <select id="currencyFrom" style="flex:1; padding:9px; border:1px solid var(--sep); border-radius:8px; font-size:14px; background:white;">
+          <option value="KRW">KRW 韓元</option>
+          <option value="JPY">JPY 日圓</option>
+          <option value="USD">USD 美元</option>
+          <option value="EUR">EUR 歐元</option>
+          <option value="CNY">CNY 人民幣</option>
+          <option value="HKD">HKD 港幣</option>
+          <option value="THB">THB 泰銖</option>
+          <option value="VND">VND 越南盾</option>
+        </select>
+        <input type="number" id="exchangeRateInput" step="0.0001" placeholder="匯率"
+               style="width:100px; padding:9px; border:1px solid var(--sep); border-radius:8px; font-size:14px;">
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span id="rateAsOf" style="font-size:12px; color:var(--text-3);"></span>
+        <button type="button" id="refreshRateBtn"
+                style="font-size:12px; padding:6px 10px; border:1px solid var(--sep); border-radius:8px; background:white; cursor:pointer;">🔄 更新匯率</button>
+      </div>
     </div>
   </div>
 
@@ -525,6 +561,7 @@
 <script>
 const FMT_LABEL = { excel:'📊 Excel', word:'📝 Word', markdown:'📄 Markdown', json:'🗂 JSON' };
 const LANG_NAMES = { en: '英文', ja: '日文', ko: '韓文', other: '外文' };
+const LANG_TO_CCY = { en: 'USD', ja: 'JPY', ko: 'KRW', other: 'USD' };
 
 let currentMode = 'general';
 let selFile = null;       // general mode: single file
@@ -543,6 +580,13 @@ const aiInfo      = document.getElementById('aiInfo');
 const translateCard  = document.getElementById('translateCard');
 const translateLabel = document.getElementById('translateLabel');
 const translateToggle = document.getElementById('translateToggle');
+const currencyCard      = document.getElementById('currencyCard');
+const currencyToggle    = document.getElementById('currencyToggle');
+const currencyOpts      = document.getElementById('currencyOpts');
+const currencyFrom      = document.getElementById('currencyFrom');
+const exchangeRateInput = document.getElementById('exchangeRateInput');
+const rateAsOf          = document.getElementById('rateAsOf');
+const refreshRateBtn    = document.getElementById('refreshRateBtn');
 const appendCard      = document.getElementById('appendCard');
 const appendToggle    = document.getElementById('appendToggle');
 const existingPicker  = document.getElementById('existingPicker');
@@ -609,6 +653,9 @@ function switchMode(mode) {
     existingPicker.style.display = 'none';
     selExistingExcel = null;
     existingName.textContent = '';
+    currencyToggle.checked = false;
+    currencyOpts.style.display = 'none';
+    currencyCard.style.display = 'none';
   }
   if (isAi) {
     genAppendToggle.checked = false;
@@ -652,6 +699,30 @@ appendToggle.addEventListener('change', () => {
   }
 });
 
+currencyToggle.addEventListener('change', () => {
+  currencyOpts.style.display = currencyToggle.checked ? '' : 'none';
+  if (currencyToggle.checked && !exchangeRateInput.value) fetchRate();
+});
+
+currencyFrom.addEventListener('change', fetchRate);
+refreshRateBtn.addEventListener('click', fetchRate);
+
+function fetchRate() {
+  const from = currencyFrom.value;
+  rateAsOf.textContent = '查詢中...';
+  fetch(`/exchange-rate?from=${from}&to=TWD`)
+    .then(r => r.json())
+    .then(res => {
+      if (res.rate) {
+        exchangeRateInput.value = res.rate.toFixed(4);
+        rateAsOf.textContent = '匯率日期: ' + (res.as_of ? res.as_of.slice(0, 16) : '今日');
+      } else {
+        rateAsOf.textContent = '查詢失敗，請手動輸入';
+      }
+    })
+    .catch(() => { rateAsOf.textContent = '查詢失敗，請手動輸入'; });
+}
+
 existingZone.addEventListener('click', () => existingFileInput.click());
 
 existingFileInput.addEventListener('change', () => {
@@ -674,6 +745,7 @@ function resetUpload() {
   uploadName.textContent = '';
   badge.className = '';
   translateCard.style.display = 'none';
+  currencyCard.style.display = 'none';
   setStatus('');
 }
 
@@ -836,12 +908,15 @@ function detectLanguage(f) {
         const multiNote = selFilesAi.length > 1 ? '（套用至全部檔案）' : '';
         translateLabel.textContent = '🌐 偵測到' + (LANG_NAMES[lang] || '外文') + '內容' + multiNote;
         translateCard.style.display = '';
+        currencyCard.style.display = '';
+        currencyFrom.value = LANG_TO_CCY[lang] || 'USD';
       } else {
         translateCard.style.display = 'none';
+        currencyCard.style.display = 'none';
       }
       updateBtn();
     })
-    .catch(() => { translateCard.style.display = 'none'; updateBtn(); });
+    .catch(() => { translateCard.style.display = 'none'; currencyCard.style.display = 'none'; updateBtn(); });
 }
 
 function doAiConvert() {
@@ -856,6 +931,13 @@ function doAiConvert() {
 
   if (appendToggle.checked && selExistingExcel) {
     fd.append('existing_excel', selExistingExcel);
+  }
+
+  const wantCurrency = currencyCard.style.display !== 'none' && currencyToggle.checked && exchangeRateInput.value;
+  fd.append('convert_currency', wantCurrency ? 'true' : 'false');
+  if (wantCurrency) {
+    fd.append('exchange_rate', exchangeRateInput.value);
+    fd.append('currency_from', currencyFrom.value);
   }
 
   fetch('/convert-ai', { method: 'POST', body: fd })

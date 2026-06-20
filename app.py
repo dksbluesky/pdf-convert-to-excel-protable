@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import datetime
 import tempfile
@@ -8,6 +9,7 @@ from io import BytesIO
 from flask import Flask, render_template, request, jsonify, send_file
 import pdfplumber
 import pandas as pd
+import requests
 
 try:
     from pdf2image import convert_from_bytes
@@ -147,11 +149,16 @@ def extract_text_pages(pdf_bytes: bytes) -> dict:
 # ──────────────────────────────────────────────
 # Build output
 # ──────────────────────────────────────────────
-def build_excel(data: dict) -> bytes:
+def build_excel(data: dict, notes: dict = None) -> bytes:
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         for sheet, df in data.items():
-            df.to_excel(writer, sheet_name=sheet[:31], index=False)
+            sheet_name = sheet[:31]
+            note = (notes or {}).get(sheet)
+            startrow = 1 if note else 0
+            df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=startrow)
+            if note:
+                writer.sheets[sheet_name]["A1"] = note
     return out.getvalue()
 
 
@@ -426,6 +433,114 @@ def _excel_safe_sheet_name(name: str, used: set) -> str:
     return clean
 
 
+NTD_COL = "NT$ / 金額"
+AMOUNT_KEYWORDS = ["金額", "金额", "금액", "amount", "total", "合計", "总额", "総額", "subtotal"]
+
+
+def _is_amount_col(name) -> bool:
+    if name == NTD_COL:
+        return False
+    low = str(name).lower()
+    return any(kw.lower() in low for kw in AMOUNT_KEYWORDS)
+
+
+def _find_amount_col(columns):
+    for c in columns:
+        if _is_amount_col(c):
+            return c
+    return None
+
+
+def _coalesce_amount_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Different invoices may translate their amount header slightly differently
+    (e.g. "금액 / 金額" vs "총금액 / 總金額"), which pd.concat treats as separate
+    columns. Unify them into one so totals sum correctly."""
+    amount_cols = [c for c in df.columns if _is_amount_col(c)]
+    if len(amount_cols) <= 1:
+        return df
+    out = df.copy()
+    primary = amount_cols[0]
+    for c in amount_cols[1:]:
+        is_blank = out[primary].isna() | (out[primary].astype(str).str.strip() == "")
+        out.loc[is_blank, primary] = out.loc[is_blank, c]
+        out = out.drop(columns=[c])
+    return out
+
+
+def _to_numeric(series: pd.Series) -> pd.Series:
+    def parse(v):
+        if pd.isna(v):
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        m = re.search(r"-?\d[\d,]*\.?\d*", str(v))
+        return float(m.group().replace(",", "")) if m else None
+    return series.map(parse)
+
+
+def _add_ntd_column(df: pd.DataFrame, rate: float) -> pd.DataFrame:
+    amount_col = _find_amount_col(df.columns)
+    if not amount_col or NTD_COL in df.columns:
+        return df
+    numeric = _to_numeric(df[amount_col])
+    ntd_values = numeric.map(lambda v: round(v * rate) if v is not None else "")
+    out = df.copy()
+    out.insert(list(df.columns).index(amount_col) + 1, NTD_COL, ntd_values)
+    return out
+
+
+def _per_file_subtotal_row(df: pd.DataFrame) -> dict:
+    row = {c: "" for c in df.columns}
+    row[df.columns[0]] = "小計"
+    amount_col = _find_amount_col(df.columns)
+    if amount_col:
+        row[amount_col] = _to_numeric(df[amount_col]).sum()
+    if NTD_COL in df.columns:
+        row[NTD_COL] = _to_numeric(df[NTD_COL]).sum()
+    return row
+
+
+def _combined_marker_row(columns, label: str) -> dict:
+    row = {c: "" for c in columns}
+    if "來源檔案" in row:
+        row["來源檔案"] = label
+    return row
+
+
+def _rebuild_with_subtotals(df: pd.DataFrame) -> pd.DataFrame:
+    """Re-insert a 小計 row after each source file's rows, grouped by 來源檔案.
+    Used to regenerate subtotals for previously-merged data whose own marker
+    rows were stripped (otherwise older invoices lose their subtotal display
+    once a new round of files is appended)."""
+    if "來源檔案" not in df.columns or df.empty:
+        return df
+    parts = []
+    for label, group in df.groupby("來源檔案", sort=False):
+        parts.append(group)
+        parts.append(pd.DataFrame([_combined_total_row(group, f"小計－{label}")]))
+    return pd.concat(parts, ignore_index=True, sort=False)
+
+
+def _strip_marker_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if "來源檔案" not in df.columns:
+        return df
+    mask = ~df["來源檔案"].astype(str).str.startswith(("小計", "總計"))
+    return df[mask].reset_index(drop=True)
+
+
+def _combined_total_row(df: pd.DataFrame, label: str) -> dict:
+    """Sums only real data rows — df may already contain interspersed
+    小計/總計 marker rows, which must be excluded to avoid double-counting."""
+    clean = _strip_marker_rows(df)
+    row = _combined_marker_row(df.columns, label)
+    amount_col = _find_amount_col(df.columns)
+    if amount_col:
+        row[amount_col] = _to_numeric(clean[amount_col]).sum()
+    if NTD_COL in df.columns:
+        row[NTD_COL] = _to_numeric(clean[NTD_COL]).sum()
+    return row
+
+
 def _extract_invoice(file_bytes: bytes, mime_type: str, translate: bool) -> pd.DataFrame:
     model = genai.GenerativeModel("gemini-2.5-flash")
     prompt = PROMPT_AI_TRANSLATE if translate else PROMPT_AI_PLAIN
@@ -482,6 +597,21 @@ def detect_language_route():
         return jsonify({"language": "zh"})
 
 
+@app.route("/exchange-rate", methods=["GET"])
+def exchange_rate_route():
+    from_cur = request.args.get("from", "KRW").upper()
+    to_cur = request.args.get("to", "TWD").upper()
+    try:
+        resp = requests.get(f"https://open.er-api.com/v6/latest/{from_cur}", timeout=6)
+        resp.raise_for_status()
+        payload = resp.json()
+        rate = payload["rates"][to_cur]
+        as_of = payload.get("time_last_update_utc", "")
+        return jsonify({"rate": rate, "as_of": as_of, "from": from_cur, "to": to_cur})
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 502
+
+
 @app.route("/convert-ai", methods=["POST"])
 def convert_ai_route():
     if not GEMINI_AVAILABLE:
@@ -492,6 +622,17 @@ def convert_ai_route():
         return jsonify({"error": "No file"}), 400
 
     translate = request.form.get("translate") == "true"
+    convert_currency = request.form.get("convert_currency") == "true"
+    currency_from = request.form.get("currency_from", "").upper()
+    exchange_rate = None
+    if convert_currency:
+        try:
+            exchange_rate = float(request.form.get("exchange_rate", "0"))
+        except ValueError:
+            exchange_rate = None
+        if not exchange_rate:
+            convert_currency = False
+
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # ── Optional: merge into an existing Excel file ──
@@ -538,18 +679,29 @@ def convert_ai_route():
     if not results:
         return jsonify({"error": "no_data"}), 422
 
+    if convert_currency:
+        results = {fn: _add_ntd_column(df, exchange_rate) for fn, df in results.items()}
+
     used_sheet_names = set(existing_sheets.keys())
     sheets = {}
     combined_parts = []
     for filename, df in results.items():
         sheet_name = _excel_safe_sheet_name(filename.rsplit(".", 1)[0], used_sheet_names)
-        sheets[sheet_name] = df
+        sheets[sheet_name] = pd.concat(
+            [df, pd.DataFrame([_per_file_subtotal_row(df)])], ignore_index=True)
+
         tagged = df.copy()
         tagged.insert(0, "來源檔案", filename)
         combined_parts.append(tagged)
+        combined_parts.append(pd.DataFrame([_combined_total_row(tagged, f"小計－{filename}")]))
 
-    new_combined = (pd.concat(combined_parts, ignore_index=True, sort=False)
-                    if len(combined_parts) > 1 else combined_parts[0])
+    new_combined = pd.concat(combined_parts, ignore_index=True, sort=False)
+    new_combined = _coalesce_amount_columns(new_combined)
+
+    rate_note = None
+    if convert_currency:
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        rate_note = f"匯率：1 {currency_from or '外幣'} = {exchange_rate} TWD（查詢日期：{today}）"
 
     merge_note = None
     if existing_sheets:
@@ -566,13 +718,26 @@ def convert_ai_route():
             if "來源檔案" not in old_df.columns:
                 old_df = old_df.copy()
                 old_df.insert(0, "來源檔案", "(原有資料)")
-            all_sheets["全部明細"] = pd.concat([old_df, new_combined], ignore_index=True, sort=False)
+            old_df = _strip_marker_rows(old_df)
+            old_df = _rebuild_with_subtotals(old_df)
+            merged = pd.concat([old_df, new_combined], ignore_index=True, sort=False)
+            merged = _coalesce_amount_columns(merged)
+            merged = pd.concat(
+                [merged, pd.DataFrame([_combined_total_row(merged, "總計")])], ignore_index=True)
+            all_sheets["全部明細"] = merged
         else:
-            all_sheets["全部明細（新增）"] = new_combined
+            combined_out = new_combined
+            if len(results) > 1:
+                combined_out = pd.concat(
+                    [combined_out, pd.DataFrame([_combined_total_row(combined_out, "總計")])],
+                    ignore_index=True)
+            all_sheets["全部明細（新增）"] = combined_out
             merge_note = "原檔案有多個分頁且找不到「全部明細」，新資料已新增為獨立分頁"
         all_sheets.update(sheets)
         filename_out = f"{existing_label}_更新_{ts}.xlsx"
     elif len(results) > 1:
+        new_combined = pd.concat(
+            [new_combined, pd.DataFrame([_combined_total_row(new_combined, "總計")])], ignore_index=True)
         all_sheets = {"全部明細": new_combined, **sheets}
         filename_out = f"批次轉換_{len(results)}筆_{ts}.xlsx"
     else:
@@ -580,7 +745,10 @@ def convert_ai_route():
         only_name = next(iter(results.keys())).rsplit(".", 1)[0]
         filename_out = f"{only_name}_{ts}.xlsx"
 
-    excel_bytes = build_excel(all_sheets)
+    notes = ({name: rate_note for name, df in all_sheets.items() if NTD_COL in df.columns}
+             if rate_note else None)
+
+    excel_bytes = build_excel(all_sheets, notes=notes)
     mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
     resp = send_file(BytesIO(excel_bytes), mimetype=mime,
