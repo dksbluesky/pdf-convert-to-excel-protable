@@ -388,9 +388,9 @@
 
     <div class="help-tip">
       💡 簡單判斷：PDF 裡的文字可以選取、複製 → 用<b>一般模式</b>。看起來像照片或掃描出來的 → 用<b>AI 模式</b>。<br><br>
-      🧳 AI 模式可一次選取多張發票/收據，自動合併成一份 Excel（總表＋各檔分頁）。<br><br>
-      📎 開啟「加入現有 Excel」可將新轉換的資料合併進舊檔案，方便分次累積（例如旅行中每天加入當天的發票）。一般模式的各格式也都有「加入現有檔案」選項，可累積到同一份 Excel／Word／Markdown／JSON。<br><br>
-      💱 偵測到外文時可開啟「加上台幣金額」，會自動查詢今日匯率並新增 NT$ 欄位（可手動調整匯率）。每張發票會自動加上小計，多張發票時會在總表最下方加上總計。
+      🧳 AI 模式可一次選取多張發票/收據，自動合併成一份 Excel：第一個分頁是「Raw Sheet」原始資料表（日期、店家/場所、品名、說明、數量、單價、金額等固定欄位，逐筆記錄，方便直接拿去做樞紐分析表/圖表/儀表板），之後每張發票各自還有一個分頁保留原始版面。<br><br>
+      📎 開啟「加入現有 Excel」可將新轉換的資料合併進舊檔案，方便分次累積（例如旅行中每天加入當天的發票）。Raw Sheet 會依日期重新分組、自動更新每日小計與總計；一般模式的各格式也都有「加入現有檔案」選項，可累積到同一份 Excel／Word／Markdown／JSON。<br><br>
+      💱 偵測到外文時可開啟「加上台幣金額」，會自動查詢今日匯率並新增 NT$ 欄位（可手動調整匯率）。Raw Sheet 會依日期顯示每日小計，最下方顯示總計；各發票自己的分頁也會加上小計。
     </div>
   </div>
 
@@ -400,7 +400,7 @@
     <div class="ai-sub">
       支援 PDF、JPG、PNG，可一次選取多個檔案（單檔最大 20 MB）<br>
       適合報價單、發票、手寫表格等圖片化文件<br>
-      多檔案會自動合併為一份 Excel（總表＋各檔分頁）<br>
+      多檔案會自動合併為一份 Excel（Raw Sheet 原始資料表＋各檔分頁）<br>
       輸出格式：Excel
     </div>
   </div>
@@ -946,16 +946,12 @@ function doAiConvert() {
       const successCount = parseInt(res.headers.get('X-Success-Count') || '0', 10);
       const totalCount   = parseInt(res.headers.get('X-Total-Count') || '0', 10);
       const hasWarnings  = !!res.headers.get('X-Convert-Warnings');
-      const mergeNoteHeader = res.headers.get('X-Merge-Note');
-      const mergeNote = mergeNoteHeader ? decodeURIComponent(mergeNoteHeader) : '';
       return extractDownload(res, 'converted.xlsx')
-        .then(d => ({ ...d, successCount, totalCount, hasWarnings, mergeNote }));
+        .then(d => ({ ...d, successCount, totalCount, hasWarnings }));
     })
-    .then(({ blob, name, successCount, totalCount, hasWarnings, mergeNote }) => {
+    .then(({ blob, name, successCount, totalCount, hasWarnings }) => {
       triggerDownload(blob, name);
-      if (mergeNote) {
-        setStatus(`⚠️ ${mergeNote}`, 'err');
-      } else if (hasWarnings) {
+      if (hasWarnings) {
         setStatus(`✅ 完成 ${successCount}/${totalCount} 筆，部分檔案無法辨識已略過`, 'ok');
       }
     })
