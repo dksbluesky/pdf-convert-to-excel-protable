@@ -2,6 +2,8 @@ import os
 import json
 import datetime
 import tempfile
+import concurrent.futures
+from urllib.parse import quote
 from io import BytesIO
 from flask import Flask, render_template, request, jsonify, send_file
 import pdfplumber
@@ -37,7 +39,7 @@ if GEMINI_AVAILABLE:
 GEMINI_MAX_BYTES = 20 * 1024 * 1024  # 20 MB inline limit
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
+app.config['MAX_CONTENT_LENGTH'] = 300 * 1024 * 1024  # 300 MB total (AI mode batch uploads)
 
 
 # ──────────────────────────────────────────────
@@ -301,6 +303,31 @@ def convert_route():
 # ──────────────────────────────────────────────
 # Routes — AI mode (Gemini)
 # ──────────────────────────────────────────────
+PROMPT_AI_PLAIN = """你是一個專業的資料輸入員。請將這份圖片或 PDF 中的表格轉換為純文字資料。
+
+【嚴格規則】
+1. 每一欄之間，請使用 "###" 作為分隔符號。
+2. 每一列資料換一行。
+3. 第一行必須是表頭。
+4. 不要輸出任何 Markdown 標記，只要純文字。
+5. 金額請保留千分位符號，不要隨意移除。
+6. 若遇到跨頁，請自動合併。
+7. 底部若有付款條件、稅金等資訊，請整理在表格最下方。"""
+
+PROMPT_AI_TRANSLATE = """你是一個專業的雙語資料輸入員。請將這份圖片或 PDF 中的表格轉換為純文字資料，並附上中文翻譯。
+
+【嚴格規則】
+1. 每一欄之間，請使用 "###" 作為分隔符號。
+2. 每一列資料換一行，第一行必須是表頭。
+3. 對於文字類欄位（如品名、描述、備註、條款等），請在該欄位右側緊接著新增一欄，欄名為「原欄名_中文」，內容為該欄位翻譯為繁體中文。
+4. 對於純數字、金額、日期、編號欄位，不需要翻譯，也不要新增欄位。
+5. 每一列的欄位數量必須一致。
+6. 不要輸出任何 Markdown 標記，只要純文字。
+7. 金額請保留千分位符號，不要隨意移除。
+8. 若遇到跨頁，請自動合併。
+9. 底部若有付款條件、稅金等資訊，請整理在表格最下方的列，文字部分同樣附上中文翻譯。"""
+
+
 def _gemini_mime(filename: str):
     fname = filename.lower()
     if fname.endswith(".pdf"):
@@ -310,6 +337,45 @@ def _gemini_mime(filename: str):
     elif fname.endswith(".png"):
         return "image/png"
     return None
+
+
+def _excel_safe_sheet_name(name: str, used: set) -> str:
+    invalid = "[]:*?/\\"
+    clean = "".join(c for c in name if c not in invalid).strip() or "Sheet"
+    clean = clean[:31]
+    base, i = clean, 1
+    while clean in used:
+        suffix = f"_{i}"
+        clean = base[:31 - len(suffix)] + suffix
+        i += 1
+    used.add(clean)
+    return clean
+
+
+def _extract_invoice(file_bytes: bytes, mime_type: str, translate: bool) -> pd.DataFrame:
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    prompt = PROMPT_AI_TRANSLATE if translate else PROMPT_AI_PLAIN
+    response = model.generate_content([{"mime_type": mime_type, "data": file_bytes}, prompt])
+
+    raw = response.text.replace("```csv", "").replace("```", "").strip()
+    lines = [ln for ln in raw.split("\n") if ln.strip()]
+    if not lines:
+        raise ValueError("no_data")
+
+    headers = [h.strip() for h in lines[0].split("###")]
+    rows = []
+    for line in lines[1:]:
+        row = [c.strip() for c in line.split("###")]
+        if len(row) < len(headers):
+            row += [""] * (len(headers) - len(row))
+        elif len(row) > len(headers):
+            row = row[:len(headers)]
+        rows.append(row)
+
+    if not rows:
+        raise ValueError("no_data")
+
+    return pd.DataFrame(rows, columns=headers)
 
 
 @app.route("/detect-language", methods=["POST"])
@@ -347,87 +413,75 @@ def convert_ai_route():
     if not GEMINI_AVAILABLE:
         return jsonify({"error": "AI 模式未啟用（缺少 GEMINI_API_KEY）"}), 503
 
-    f = request.files.get("file")
-    if not f:
+    files = request.files.getlist("file")
+    if not files:
         return jsonify({"error": "No file"}), 400
 
-    file_bytes = f.read()
-    if len(file_bytes) > GEMINI_MAX_BYTES:
-        return jsonify({"error": "file_too_large"}), 413
-
-    mime_type = _gemini_mime(f.filename)
-    if not mime_type:
-        return jsonify({"error": "不支援的格式，請上傳 PDF、JPG 或 PNG"}), 400
-
     translate = request.form.get("translate") == "true"
-    base_name = f.filename.rsplit(".", 1)[0]
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
+    jobs = []
+    for f in files:
+        file_bytes = f.read()
+        if len(file_bytes) > GEMINI_MAX_BYTES:
+            jobs.append((f.filename, None, "too_large"))
+            continue
+        mime_type = _gemini_mime(f.filename)
+        if not mime_type:
+            jobs.append((f.filename, None, "bad_format"))
+            continue
+        jobs.append((f.filename, file_bytes, mime_type))
 
-        if translate:
-            prompt = """你是一個專業的雙語資料輸入員。請將這份圖片或 PDF 中的表格轉換為純文字資料，並附上中文翻譯。
+    def _run(job):
+        filename, file_bytes, mime_type = job
+        if file_bytes is None:
+            return filename, None, mime_type  # reason stored in mime_type slot
+        try:
+            return filename, _extract_invoice(file_bytes, mime_type, translate), None
+        except Exception as e:
+            return filename, None, ("429" if "429" in str(e) else "no_data")
 
-【嚴格規則】
-1. 每一欄之間，請使用 "###" 作為分隔符號。
-2. 每一列資料換一行，第一行必須是表頭。
-3. 對於文字類欄位（如品名、描述、備註、條款等），請在該欄位右側緊接著新增一欄，欄名為「原欄名_中文」，內容為該欄位翻譯為繁體中文。
-4. 對於純數字、金額、日期、編號欄位，不需要翻譯，也不要新增欄位。
-5. 每一列的欄位數量必須一致。
-6. 不要輸出任何 Markdown 標記，只要純文字。
-7. 金額請保留千分位符號，不要隨意移除。
-8. 若遇到跨頁，請自動合併。
-9. 底部若有付款條件、稅金等資訊，請整理在表格最下方的列，文字部分同樣附上中文翻譯。"""
-        else:
-            prompt = """你是一個專業的資料輸入員。請將這份圖片或 PDF 中的表格轉換為純文字資料。
+    results, failures = {}, []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(jobs))) as ex:
+        for filename, df, reason in ex.map(_run, jobs):
+            if df is not None:
+                results[filename] = df
+            else:
+                failures.append((filename, reason))
 
-【嚴格規則】
-1. 每一欄之間，請使用 "###" 作為分隔符號。
-2. 每一列資料換一行。
-3. 第一行必須是表頭。
-4. 不要輸出任何 Markdown 標記，只要純文字。
-5. 金額請保留千分位符號，不要隨意移除。
-6. 若遇到跨頁，請自動合併。
-7. 底部若有付款條件、稅金等資訊，請整理在表格最下方。"""
+    if not results:
+        return jsonify({"error": "no_data"}), 422
 
-        response = model.generate_content([
-            {"mime_type": mime_type, "data": file_bytes},
-            prompt
-        ])
+    used_sheet_names = set()
+    sheets = {}
+    combined_parts = []
+    for filename, df in results.items():
+        sheet_name = _excel_safe_sheet_name(filename.rsplit(".", 1)[0], used_sheet_names)
+        sheets[sheet_name] = df
+        tagged = df.copy()
+        tagged.insert(0, "來源檔案", filename)
+        combined_parts.append(tagged)
 
-        raw = response.text.replace("```csv", "").replace("```", "").strip()
-        lines = [ln for ln in raw.split("\n") if ln.strip()]
+    if len(results) > 1:
+        combined = pd.concat(combined_parts, ignore_index=True, sort=False)
+        all_sheets = {"全部明細": combined, **sheets}
+        filename_out = f"批次轉換_{len(results)}筆_{ts}.xlsx"
+    else:
+        all_sheets = sheets
+        only_name = next(iter(results.keys())).rsplit(".", 1)[0]
+        filename_out = f"{only_name}_{ts}.xlsx"
 
-        if not lines:
-            return jsonify({"error": "no_data"}), 422
+    excel_bytes = build_excel(all_sheets)
+    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-        headers = [h.strip() for h in lines[0].split("###")]
-        rows = []
-        for line in lines[1:]:
-            row = [c.strip() for c in line.split("###")]
-            if len(row) < len(headers):
-                row += [""] * (len(headers) - len(row))
-            elif len(row) > len(headers):
-                row = row[:len(headers)]
-            rows.append(row)
-
-        if not rows:
-            return jsonify({"error": "no_data"}), 422
-
-        df = pd.DataFrame(rows, columns=headers)
-        excel_bytes = build_excel({"表格": df})
-        filename = f"{base_name}_{ts}.xlsx"
-        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-        return send_file(BytesIO(excel_bytes), mimetype=mime,
-                         as_attachment=True, download_name=filename)
-
-    except Exception as e:
-        err = str(e)
-        if "429" in err:
-            return jsonify({"error": "429"}), 429
-        return jsonify({"error": err[:300]}), 500
+    resp = send_file(BytesIO(excel_bytes), mimetype=mime,
+                     as_attachment=True, download_name=filename_out)
+    resp.headers["X-Success-Count"] = str(len(results))
+    resp.headers["X-Total-Count"] = str(len(jobs))
+    if failures:
+        resp.headers["X-Convert-Warnings"] = ";".join(
+            f"{quote(fn)}:{reason}" for fn, reason in failures)
+    return resp
 
 
 if __name__ == "__main__":

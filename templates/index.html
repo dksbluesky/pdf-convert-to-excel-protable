@@ -373,6 +373,7 @@
         <div class="help-item"><span class="ic">📷</span><span>紙本文件照片（JPG / PNG）</span></div>
         <div class="help-item"><span class="ic">🧾</span><span>掃描版 PDF，表格邊框不清楚或無邊框</span></div>
         <div class="help-item"><span class="ic">✍️</span><span>手寫表單或收據</span></div>
+        <div class="help-item"><span class="ic">🧳</span><span>出國旅遊一堆發票/收據照片，想合併成一份 Excel</span></div>
       </div>
     </div>
 
@@ -381,12 +382,13 @@
       <div class="help-list">
         <div class="help-item"><span class="ic">📝</span><span>一般數位 PDF（文字可選取、複製）</span></div>
         <div class="help-item"><span class="ic">📁</span><span>需要輸出 Word、Markdown 或 JSON</span></div>
-        <div class="help-item"><span class="ic">📦</span><span>檔案超過 20 MB（AI 模式上限為 20 MB）</span></div>
+        <div class="help-item"><span class="ic">📦</span><span>單檔超過 20 MB（AI 模式單檔上限）</span></div>
       </div>
     </div>
 
     <div class="help-tip">
-      💡 簡單判斷：PDF 裡的文字可以選取、複製 → 用<b>一般模式</b>。看起來像照片或掃描出來的 → 用<b>AI 模式</b>。
+      💡 簡單判斷：PDF 裡的文字可以選取、複製 → 用<b>一般模式</b>。看起來像照片或掃描出來的 → 用<b>AI 模式</b>。<br><br>
+      🧳 AI 模式可一次選取多張發票/收據，自動合併成一份 Excel（總表＋各檔分頁）。
     </div>
   </div>
 
@@ -394,8 +396,9 @@
   <div id="aiInfo">
     <div class="ai-title">⚡ Gemini 2.5 Flash</div>
     <div class="ai-sub">
-      支援 PDF、JPG、PNG（最大 20 MB）<br>
+      支援 PDF、JPG、PNG，可一次選取多個檔案（單檔最大 20 MB）<br>
       適合報價單、發票、手寫表格等圖片化文件<br>
+      多檔案會自動合併為一份 Excel（總表＋各檔分頁）<br>
       輸出格式：Excel
     </div>
   </div>
@@ -482,7 +485,8 @@ const FMT_LABEL = { excel:'📊 Excel', word:'📝 Word', markdown:'📄 Markdow
 const LANG_NAMES = { en: '英文', ja: '日文', ko: '韓文', other: '外文' };
 
 let currentMode = 'general';
-let selFile = null;
+let selFile = null;       // general mode: single file
+let selFilesAi = [];      // AI mode: multiple files
 let selFmt  = 'excel';
 
 const uploadCard  = document.getElementById('uploadCard');
@@ -531,9 +535,10 @@ function switchMode(mode) {
   }
 
   // Upload zone labels
-  uploadMain.textContent = isAi ? '點此上傳 PDF、JPG 或 PNG' : '點此上傳 PDF';
-  uploadSub.textContent  = isAi ? '或拖曳至此 · 最大 20 MB' : '或拖曳至此 · 最大 50 MB';
+  uploadMain.textContent = isAi ? '點此上傳 PDF、JPG 或 PNG（可多選）' : '點此上傳 PDF';
+  uploadSub.textContent  = isAi ? '或拖曳至此 · 單檔最大 20 MB' : '或拖曳至此 · 最大 50 MB';
   fileInput.setAttribute('accept', isAi ? '.pdf,.jpg,.jpeg,.png' : '.pdf');
+  fileInput.multiple = isAi;
 
   // Show/hide sections
   aiInfo.classList.toggle('show', isAi);
@@ -546,6 +551,7 @@ function switchMode(mode) {
 
 function resetUpload() {
   selFile = null;
+  selFilesAi = [];
   fileInput.value = '';
   zone.classList.remove('ready', 'drag');
   uploadIcon.textContent = '📂';
@@ -563,18 +569,49 @@ zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
 zone.addEventListener('drop', e => {
   e.preventDefault();
   zone.classList.remove('drag');
-  const f = e.dataTransfer.files[0];
-  if (!f) return;
-  if (isValidFile(f)) onFile(f);
-  else setStatus(currentMode === 'ai' ? '⚠️ 請上傳 PDF、JPG 或 PNG' : '⚠️ 請上傳 PDF 檔案', 'err');
+  const list = Array.from(e.dataTransfer.files || []);
+  if (list.length) handleFiles(list);
 });
 
-fileInput.addEventListener('change', () => fileInput.files[0] && onFile(fileInput.files[0]));
+fileInput.addEventListener('change', () => {
+  const list = Array.from(fileInput.files || []);
+  if (list.length) handleFiles(list);
+});
 
 function isValidFile(f) {
   const name = f.name.toLowerCase();
   if (currentMode === 'ai') return /\.(pdf|jpg|jpeg|png)$/.test(name);
   return name.endsWith('.pdf');
+}
+
+function handleFiles(list) {
+  if (currentMode === 'ai') {
+    const valid = list.filter(isValidFile);
+    if (!valid.length) {
+      setStatus('⚠️ 請上傳 PDF、JPG 或 PNG', 'err');
+      return;
+    }
+    onAiFiles(valid, list.length - valid.length);
+  } else {
+    if (isValidFile(list[0])) onFile(list[0]);
+    else setStatus('⚠️ 請上傳 PDF 檔案', 'err');
+  }
+}
+
+function onAiFiles(files, skippedCount) {
+  selFilesAi = files;
+  zone.classList.add('ready');
+  uploadIcon.textContent = '✅';
+  const totalMb = (files.reduce((s, f) => s + f.size, 0) / (1024 * 1024)).toFixed(1);
+  uploadName.textContent = files.length > 1
+    ? `已選擇 ${files.length} 個檔案（共 ${totalMb} MB）`
+    : files[0].name;
+  legend.style.display = 'none';
+  badge.className = '';
+  translateCard.style.display = 'none';
+  setStatus(skippedCount > 0 ? `⚠️ 已略過 ${skippedCount} 個不支援的檔案` : '');
+
+  detectLanguage(files[0]);
 }
 
 function onFile(f) {
@@ -584,13 +621,7 @@ function onFile(f) {
   uploadName.textContent = f.name;
   legend.style.display   = 'none';
   badge.className        = '';
-  translateCard.style.display = 'none';
   setStatus('');
-
-  if (currentMode === 'ai') {
-    detectLanguage(f);
-    return;
-  }
 
   // General mode: auto-analyse
   setBtnLoading('分析中...');
@@ -629,7 +660,8 @@ function pickFmt(fmt) {
 
 // ── Convert ───────────────────────────────────────────
 convertBtn.addEventListener('click', () => {
-  if (!selFile) return;
+  const hasSel = currentMode === 'ai' ? selFilesAi.length > 0 : !!selFile;
+  if (!hasSel) return;
   currentMode === 'ai' ? doAiConvert() : doGeneralConvert();
 });
 
@@ -670,7 +702,8 @@ function detectLanguage(f) {
     .then(res => {
       const lang = res.language;
       if (lang && lang !== 'zh' && lang !== 'unknown') {
-        translateLabel.textContent = '🌐 偵測到' + (LANG_NAMES[lang] || '外文') + '內容';
+        const multiNote = selFilesAi.length > 1 ? '（套用至全部檔案）' : '';
+        translateLabel.textContent = '🌐 偵測到' + (LANG_NAMES[lang] || '外文') + '內容' + multiNote;
         translateCard.style.display = '';
       } else {
         translateCard.style.display = 'none';
@@ -681,20 +714,30 @@ function detectLanguage(f) {
 }
 
 function doAiConvert() {
-  setBtnLoading('AI 處理中，請稍候...');
+  const n = selFilesAi.length;
+  setBtnLoading(n > 1 ? `AI 處理 ${n} 個檔案中，請稍候...` : 'AI 處理中，請稍候...');
   setStatus('');
 
   const fd = new FormData();
-  fd.append('file', selFile);
+  selFilesAi.forEach(f => fd.append('file', f));
   const wantTranslate = translateCard.style.display !== 'none' && translateToggle.checked;
   fd.append('translate', wantTranslate ? 'true' : 'false');
 
   fetch('/convert-ai', { method: 'POST', body: fd })
     .then(res => {
       if (!res.ok) return res.json().then(e => { throw new Error(e.error || 'error'); });
-      return extractDownload(res, 'converted.xlsx');
+      const successCount = parseInt(res.headers.get('X-Success-Count') || '0', 10);
+      const totalCount   = parseInt(res.headers.get('X-Total-Count') || '0', 10);
+      const hasWarnings  = !!res.headers.get('X-Convert-Warnings');
+      return extractDownload(res, 'converted.xlsx')
+        .then(d => ({ ...d, successCount, totalCount, hasWarnings }));
     })
-    .then(({ blob, name }) => triggerDownload(blob, name))
+    .then(({ blob, name, successCount, totalCount, hasWarnings }) => {
+      triggerDownload(blob, name);
+      if (hasWarnings) {
+        setStatus(`✅ 完成 ${successCount}/${totalCount} 筆，部分檔案無法辨識已略過`, 'ok');
+      }
+    })
     .catch(err => {
       setBtnReady();
       if (err.message === '429')
@@ -725,10 +768,16 @@ function triggerDownload(blob, name) {
 
 // ── Helpers ────────────────────────────────────────────
 function updateBtn() {
-  convertBtn.disabled = !selFile;
-  if (!selFile)        btnLabel.textContent = currentMode === 'ai' ? '請先上傳檔案' : '請先上傳 PDF';
-  else if (currentMode === 'ai') btnLabel.textContent = 'AI 轉換並下載 Excel ⚡';
-  else                 btnLabel.textContent = '轉換並下載 ' + FMT_LABEL[selFmt];
+  if (currentMode === 'ai') {
+    const n = selFilesAi.length;
+    convertBtn.disabled = n === 0;
+    btnLabel.textContent = n === 0 ? '請先上傳檔案'
+      : n > 1 ? `AI 轉換 ${n} 個檔案並合併下載 ⚡`
+      : 'AI 轉換並下載 Excel ⚡';
+  } else {
+    convertBtn.disabled = !selFile;
+    btnLabel.textContent = !selFile ? '請先上傳 PDF' : '轉換並下載 ' + FMT_LABEL[selFmt];
+  }
 }
 
 function setBtnLoading(txt) {
