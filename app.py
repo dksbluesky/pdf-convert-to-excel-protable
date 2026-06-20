@@ -498,6 +498,12 @@ def _coalesce_amount_columns(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.copy()
     primary = amount_cols[0]
+    # One side may be a real float64 column (read back from a previously
+    # written Excel file, after the numeric-formatting fix) while the other
+    # is still a string column (freshly extracted, e.g. "16,000") — assigning
+    # strings into a strict float64 column raises in pandas 2.x. Widen to
+    # object first; _to_numeric() parses either representation later anyway.
+    out[primary] = out[primary].astype(object)
     for c in amount_cols[1:]:
         is_blank = out[primary].isna() | (out[primary].astype(str).str.strip() == "")
         out.loc[is_blank, primary] = out.loc[is_blank, c]
