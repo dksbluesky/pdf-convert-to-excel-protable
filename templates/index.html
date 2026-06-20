@@ -389,7 +389,7 @@
     <div class="help-tip">
       💡 簡單判斷：PDF 裡的文字可以選取、複製 → 用<b>一般模式</b>。看起來像照片或掃描出來的 → 用<b>AI 模式</b>。<br><br>
       🧳 AI 模式可一次選取多張發票/收據，自動合併成一份 Excel（總表＋各檔分頁）。<br><br>
-      📎 開啟「加入現有 Excel」可將新轉換的資料合併進舊檔案，方便分次累積（例如旅行中每天加入當天的發票）。
+      📎 開啟「加入現有 Excel」可將新轉換的資料合併進舊檔案，方便分次累積（例如旅行中每天加入當天的發票）。一般模式的各格式也都有「加入現有檔案」選項，可累積到同一份 Excel／Word／Markdown／JSON。
     </div>
   </div>
 
@@ -481,6 +481,25 @@
       </label>
     </div>
     {% endif %}
+
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="tl">📎 加入現有檔案</div>
+        <div class="th" id="genAppendHint">將新資料合併進舊的 .xlsx 檔案，而非建立新檔</div>
+      </div>
+      <label class="sw">
+        <input type="checkbox" id="genAppendToggle">
+        <span class="sw-track"></span>
+      </label>
+    </div>
+    <div id="genExistingPicker" style="display:none; margin-top:10px;">
+      <div class="upload-zone" id="genExistingZone" style="padding:16px;">
+        <div style="font-size:26px; line-height:1;">📁</div>
+        <div style="margin-top:6px; font-size:14px; font-weight:500; color:var(--text-2);" id="genExistingLabel">點此選擇現有 .xlsx 檔案</div>
+        <div class="upload-name" id="genExistingName"></div>
+      </div>
+      <input type="file" id="genExistingFileInput" accept=".xlsx" style="display:none;">
+    </div>
   </div>
 
   <!-- Legend (general mode, before upload) -->
@@ -531,6 +550,15 @@ const existingZone    = document.getElementById('existingZone');
 const existingFileInput = document.getElementById('existingFileInput');
 const existingName    = document.getElementById('existingName');
 let selExistingExcel = null;
+const genAppendToggle   = document.getElementById('genAppendToggle');
+const genAppendHint     = document.getElementById('genAppendHint');
+const genExistingPicker = document.getElementById('genExistingPicker');
+const genExistingZone   = document.getElementById('genExistingZone');
+const genExistingFileInput = document.getElementById('genExistingFileInput');
+const genExistingName   = document.getElementById('genExistingName');
+const genExistingLabel  = document.getElementById('genExistingLabel');
+let selGenExisting = null;
+const FMT_EXT = { excel: '.xlsx', word: '.docx', markdown: '.md', json: '.json' };
 const badge       = document.getElementById('badge');
 const badgeTitle  = document.getElementById('badgeTitle');
 const badgeRsn    = document.getElementById('badgeReason');
@@ -582,9 +610,38 @@ function switchMode(mode) {
     selExistingExcel = null;
     existingName.textContent = '';
   }
+  if (isAi) {
+    genAppendToggle.checked = false;
+    genExistingPicker.style.display = 'none';
+    selGenExisting = null;
+    genExistingName.textContent = '';
+  }
 
   updateBtn();
 }
+
+genAppendToggle.addEventListener('change', () => {
+  genExistingPicker.style.display = genAppendToggle.checked ? '' : 'none';
+  if (!genAppendToggle.checked) {
+    selGenExisting = null;
+    genExistingName.textContent = '';
+    genExistingFileInput.value = '';
+  }
+});
+
+genExistingZone.addEventListener('click', () => genExistingFileInput.click());
+
+genExistingFileInput.addEventListener('change', () => {
+  const f = genExistingFileInput.files[0];
+  if (!f) return;
+  const ext = FMT_EXT[selFmt];
+  if (!f.name.toLowerCase().endsWith(ext)) {
+    setStatus(`⚠️ 請選擇 ${ext} 檔案`, 'err');
+    return;
+  }
+  selGenExisting = f;
+  genExistingName.textContent = f.name;
+});
 
 appendToggle.addEventListener('change', () => {
   existingPicker.style.display = appendToggle.checked ? '' : 'none';
@@ -714,6 +771,17 @@ function pickFmt(fmt) {
   document.querySelectorAll('.fmt-btn').forEach(b =>
     b.classList.toggle('selected', b.dataset.fmt === fmt));
   wordOpts.classList.toggle('show', fmt === 'word');
+
+  const ext = FMT_EXT[fmt];
+  genAppendHint.textContent = `將新資料合併進舊的 ${ext} 檔案，而非建立新檔`;
+  genExistingLabel.textContent = `點此選擇現有 ${ext} 檔案`;
+  genExistingFileInput.setAttribute('accept', ext);
+  if (selGenExisting && !selGenExisting.name.toLowerCase().endsWith(ext)) {
+    selGenExisting = null;
+    genExistingName.textContent = '';
+    genExistingFileInput.value = '';
+  }
+
   if (selFile && !convertBtn.disabled) updateBtn();
 }
 
@@ -735,6 +803,10 @@ function doGeneralConvert() {
   const ocrCb = document.getElementById('ocrToggle');
   fd.append('ocr', ocrCb && ocrCb.checked ? 'true' : 'false');
   fd.append('word_editable', document.getElementById('wordEditable').checked ? 'true' : 'false');
+
+  if (genAppendToggle.checked && selGenExisting) {
+    fd.append('existing_file', selGenExisting);
+  }
 
   fetch('/convert', { method: 'POST', body: fd })
     .then(res => {

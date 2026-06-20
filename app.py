@@ -18,6 +18,7 @@ except ImportError:
 
 try:
     from docx import Document
+    from docx.oxml.ns import qn
 except ImportError:
     pass
 
@@ -213,6 +214,19 @@ def build_word_editable(pdf_bytes: bytes, table_data: dict = None) -> bytes:
     return out.getvalue()
 
 
+def _append_docx(existing_bytes: bytes, new_bytes: bytes) -> bytes:
+    base_doc = Document(BytesIO(existing_bytes))
+    new_doc = Document(BytesIO(new_bytes))
+    base_doc.add_page_break()
+    for element in list(new_doc.element.body):
+        if element.tag == qn("w:sectPr"):
+            continue
+        base_doc.element.body.append(element)
+    out = BytesIO()
+    base_doc.save(out)
+    return out.getvalue()
+
+
 def build_markdown(data: dict, is_ocr: bool) -> str:
     parts = ["# PDF 轉換結果\n"]
     for page, content in data.items():
@@ -257,6 +271,10 @@ def convert_route():
     base_name = request.form.get("filename", "converted")
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    existing_file = request.files.get("existing_file")
+    existing_bytes = existing_file.read() if existing_file and existing_file.filename else None
+    existing_label = existing_file.filename.rsplit(".", 1)[0] if existing_bytes else None
+
     if use_ocr and OCR_AVAILABLE:
         data = extract_ocr(pdf_bytes)
         is_ocr = True
@@ -267,30 +285,82 @@ def convert_route():
     if fmt == "excel":
         if not data:
             return jsonify({"error": "no_data"}), 422
-        file_bytes = build_excel(data)
-        filename = f"{base_name}_{ts}.xlsx"
+        if existing_bytes:
+            try:
+                existing_sheets = pd.read_excel(BytesIO(existing_bytes), sheet_name=None)
+            except Exception:
+                existing_sheets = {}
+            used = set(existing_sheets.keys())
+            all_sheets = dict(existing_sheets)
+            multi_page = len(data) > 1
+            for label, df in data.items():
+                raw_name = f"{base_name}_{label}" if multi_page else base_name
+                all_sheets[_excel_safe_sheet_name(raw_name, used)] = df
+            file_bytes = build_excel(all_sheets)
+            filename = f"{existing_label}_更新_{ts}.xlsx"
+        else:
+            file_bytes = build_excel(data)
+            filename = f"{base_name}_{ts}.xlsx"
         mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
     elif fmt == "word":
         if word_editable:
-            file_bytes = build_word_editable(pdf_bytes, table_data=data if not is_ocr else None)
+            new_bytes = build_word_editable(pdf_bytes, table_data=data if not is_ocr else None)
         else:
-            file_bytes = build_word(pdf_bytes, is_ocr, ocr_data=data if is_ocr else None)
-        filename = f"{base_name}_{ts}.docx"
+            new_bytes = build_word(pdf_bytes, is_ocr, ocr_data=data if is_ocr else None)
+        if existing_bytes:
+            try:
+                file_bytes = _append_docx(existing_bytes, new_bytes)
+                filename = f"{existing_label}_更新_{ts}.docx"
+            except Exception:
+                file_bytes = new_bytes
+                filename = f"{base_name}_{ts}.docx"
+        else:
+            file_bytes = new_bytes
+            filename = f"{base_name}_{ts}.docx"
         mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
     elif fmt == "markdown":
         if not data:
             return jsonify({"error": "no_data"}), 422
-        file_bytes = build_markdown(data, is_ocr).encode("utf-8")
-        filename = f"{base_name}_{ts}.md"
+        new_md = build_markdown(data, is_ocr)
+        if existing_bytes:
+            try:
+                old_md = existing_bytes.decode("utf-8")
+            except Exception:
+                old_md = ""
+            file_bytes = (old_md.rstrip() + "\n\n---\n\n" + new_md).encode("utf-8")
+            filename = f"{existing_label}_更新_{ts}.md"
+        else:
+            file_bytes = new_md.encode("utf-8")
+            filename = f"{base_name}_{ts}.md"
         mime = "text/markdown"
 
     elif fmt == "json":
         if not data:
             return jsonify({"error": "no_data"}), 422
-        file_bytes = build_json(data, is_ocr).encode("utf-8")
-        filename = f"{base_name}_{ts}.json"
+        new_payload = data if is_ocr else {p: df.to_dict(orient="records") for p, df in data.items()}
+        if existing_bytes:
+            try:
+                old_payload = json.loads(existing_bytes.decode("utf-8"))
+                if not isinstance(old_payload, dict):
+                    old_payload = {"原始資料": old_payload}
+            except Exception:
+                old_payload = {}
+            used = set(old_payload.keys())
+            merged = dict(old_payload)
+            for key, value in new_payload.items():
+                safe_key, i = key, 1
+                while safe_key in used:
+                    safe_key = f"{key}_{i}"
+                    i += 1
+                used.add(safe_key)
+                merged[safe_key] = value
+            file_bytes = json.dumps(merged, ensure_ascii=False, indent=2).encode("utf-8")
+            filename = f"{existing_label}_更新_{ts}.json"
+        else:
+            file_bytes = json.dumps(new_payload, ensure_ascii=False, indent=2).encode("utf-8")
+            filename = f"{base_name}_{ts}.json"
         mime = "application/json"
 
     else:
