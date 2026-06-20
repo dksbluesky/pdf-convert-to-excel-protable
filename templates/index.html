@@ -974,8 +974,18 @@ function doAiConvert() {
 
 function extractDownload(res, fallbackName) {
   const cd = res.headers.get('Content-Disposition') || '';
-  const m  = cd.match(/filename[^;=\n]*=(['"]?)([^\n"']+)\1/);
-  const name = m ? m[2] : fallbackName;
+  let name = fallbackName;
+  // Prefer the RFC 5987/6266 extended filename* param (correctly UTF-8
+  // percent-encoded for non-ASCII names) — a naive single regex over both
+  // filename= and filename*= params greedily over-matches into the second
+  // param, since neither value here is quoted.
+  const extMatch = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  if (extMatch) {
+    try { name = decodeURIComponent(extMatch[1]); } catch (e) { /* keep fallback */ }
+  } else {
+    const m = cd.match(/filename="?([^";]+)"?/i);
+    if (m) name = m[1];
+  }
   return res.blob().then(blob => ({ blob, name }));
 }
 
