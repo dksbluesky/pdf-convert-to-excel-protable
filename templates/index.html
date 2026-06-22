@@ -946,13 +946,17 @@ function doAiConvert() {
       const successCount = parseInt(res.headers.get('X-Success-Count') || '0', 10);
       const totalCount   = parseInt(res.headers.get('X-Total-Count') || '0', 10);
       const hasWarnings  = !!res.headers.get('X-Convert-Warnings');
+      const skippedHeader = res.headers.get('X-Raw-Sheet-Skipped');
+      const skippedCount = skippedHeader ? skippedHeader.split(';').filter(Boolean).length : 0;
       return extractDownload(res, 'converted.xlsx')
-        .then(d => ({ ...d, successCount, totalCount, hasWarnings }));
+        .then(d => ({ ...d, successCount, totalCount, hasWarnings, skippedCount }));
     })
-    .then(({ blob, name, successCount, totalCount, hasWarnings }) => {
+    .then(({ blob, name, successCount, totalCount, hasWarnings, skippedCount }) => {
       triggerDownload(blob, name);
       if (hasWarnings) {
         setStatus(`✅ 完成 ${successCount}/${totalCount} 筆，部分檔案無法辨識已略過`, 'ok');
+      } else if (skippedCount > 0) {
+        setStatus(`✅ 完成 ${successCount}/${totalCount} 筆，${skippedCount} 個檔案看起來不是發票/收據，已略過 Raw Sheet（仍保留各自分頁）`, 'ok');
       }
     })
     .catch(err => {
